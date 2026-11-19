@@ -1,0 +1,78 @@
+#!/bin/bash
+# Firekb CR660X 出厂默认配置（首次启动执行一次）
+. /lib/functions/uci-defaults.sh
+
+# ============ 系统标识：Firekb ============
+uci -q batch <<-EOT
+	set system.@system[0].hostname='Firekb'
+	set system.@system[0].description='Firekb Router'
+	set system.@system[0].timezone='CST-8'
+	set system.@system[0].zonename='Asia/Shanghai'
+	set system.@system[0].notes='Firekb Router | MT7621 | CR660X'
+	commit system
+EOT
+
+# ============ LuCI 中文 + Vantage 主题 ============
+uci -q batch <<-EOT
+	set luci.main.lang='zh_cn'
+	set luci.main.mediaurlbase='/luci-static/vantage'
+	commit luci
+EOT
+
+# ============ 网络：CR660X 硬件拓扑 ============
+# LAN = lan1 lan2 lan3 (gmac0)，WAN = wan (gmac1)
+# 注意：board.d/02_network 已经正确设置，这里只做确认性覆盖
+uci -q delete network.@device[0]
+uci -q delete network.lan
+uci -q delete network.wan
+uci -q delete network.wan6
+
+uci -q batch <<-EOT
+	set network.brlan=device
+	set network.brlan.name='br-lan'
+	set network.brlan.type='bridge'
+	set network.brlan.ports='lan1' 'lan2' 'lan3'
+	set network.lan=interface
+	set network.lan.device='br-lan'
+	set network.lan.proto='static'
+	set network.lan.ipaddr='192.168.9.1'
+	set network.lan.netmask='255.255.255.0'
+	set network.lan.ip6assign='60'
+	set network.wan=interface
+	set network.wan.device='wan'
+	set network.wan.proto='dhcp'
+	set network.wan6=interface
+	set network.wan6.device='wan'
+	set network.wan6.proto='dhcpv6'
+	commit network
+EOT
+
+# ============ 无线：Firekb_2.4G / Firekb_5G ============
+uci -q batch <<-EOT
+	set wireless.radio0.disabled='0'
+	set wireless.radio0.country='CN'
+	set wireless.radio0.channel='1'
+	set wireless.radio0.htmode='HE20'
+	set wireless.default_radio0.network='lan'
+	set wireless.default_radio0.ssid='Firekb_2.4G'
+	set wireless.default_radio0.encryption='psk2'
+	set wireless.default_radio0.key='12345678'
+	set wireless.radio1.disabled='0'
+	set wireless.radio1.country='CN'
+	set wireless.radio1.channel='36'
+	set wireless.radio1.htmode='HE80'
+	set wireless.default_radio1.network='lan'
+	set wireless.default_radio1.ssid='Firekb_5G'
+	set wireless.default_radio1.encryption='psk2'
+	set wireless.default_radio1.key='12345678'
+	commit wireless
+EOT
+
+# ============ 时区 / NTP ============
+uci -q batch <<-EOT
+	set system.ntp.enabled='1'
+	set system.ntp.enable_server='0'
+	commit system
+EOT
+
+exit 0

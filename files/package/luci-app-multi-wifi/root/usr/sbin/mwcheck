@@ -1,0 +1,355 @@
+#!/bin/sh
+#
+# mwcheck - luci-app-multi-wifi 环境自检
+#
+# 纯只读检测，不修改任何配置。
+# 用法:
+#   mwcheck              # 完整检测（彩色文本）
+#   mwcheck -q           # 只输出问题和结论
+#   mwcheck -j           # JSON 输出（供 LuCI 界面使用）
+#   mwcheck --info       # 只输出基本信息（用于页面顶部状态条）
+#
+# 退出码: 0=环境完全满足  1=有阻碍性问题  2=可以安装但有警告
+#
+
+QUIET=0
+JSON=0
+INFO=0
+case "$1" in
+    -q) QUIET=1 ;;
+    -j) JSON=1; QUIET=1 ;;
+    --info) INFO=1; QUIET=1 ;;
+esac
+
+FAIL=0
+WARN=0
+
+# JSON 收集
+JITEMS=''
+JDETAIL=''
+
+# 颜色（非终端时自动禁用）
+if [ -t 1 ] && [ $JSON -eq 0 ]; then
+    R='\033[31m'; Y='\033[33m'; G='\033[32m'; B='\033[36m'; D='\033[0m'
+else
+    R=''; Y=''; G=''; B=''; D=''
+fi
+
+# JSON 字符串转义
+jesc() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/ /g' | \
+        awk 'BEGIN{ORS=""} {gsub(/\r/,""); print (NR>1 ? "\\n" : "") $0}'
+}
+
+# 记录一条检查结果
+# 参数: level(ok|warn|fail|info)  section  message
+rec() {
+    _lv="$1"; _sec="$2"; _ms="$(jesc "$3")"
+    if [ -n "$JITEMS" ]; then
+        JITEMS="$JITEMS,"
+    fi
+    JITEMS="$JITEMS{\"level\":\"$_lv\",\"section\":\"$(jesc "$_sec")\",\"message\":\"$_ms\"}"
+}
+
+ok()   { rec ok   "$CURSEC" "$1"; [ $QUIET -eq 1 ] || printf "  ${G}✓${D} %s\n" "$1"; }
+warn() {
+    WARN=$((WARN+1))
+    rec warn "$CURSEC" "$1"
+    if [ $JSON -eq 0 ] && [ $INFO -eq 0 ]; then printf "  ${Y}!${D} %s\n" "$1"; fi
+}
+fail() {
+    FAIL=$((FAIL+1))
+    rec fail "$CURSEC" "$1"
+    if [ $JSON -eq 0 ] && [ $INFO -eq 0 ]; then printf "  ${R}✗${D} %s\n" "$1"; fi
+}
+
+head() {
+    CURSEC="$1"
+    [ $QUIET -eq 1 ] || printf "\n${B}%s${D}\n" "$1"
+}
+# 详细信息（只在完整模式显示，JSON 里作为 detail 字段）
+detail() {
+    [ $JSON -eq 1 ] || [ $INFO -eq 1 ] || printf "    %s\n" "$1"
+    if [ -n "$JDETAIL" ]; then JDETAIL="$JDETAIL,"; fi
+    JDETAIL="$JDETAIL$(jesc "$1")"
+}
+
+CURSEC=''
+
+# ---------------------------------------------------------------
+head "1. 系统信息"
+# ---------------------------------------------------------------
+[ -f /etc/openwrt_release ] || { fail "这不是 OpenWrt 系统（缺 /etc/openwrt_release）"; }
+if [ -f /etc/openwrt_release ]; then
+    . /etc/openwrt_release 2>/dev/null
+    REL="$DISTRIB_RELEASE"
+    DESC="$DISTRIB_DESCRIPTION"
+    [ $QUIET -eq 1 ] || printf "    版本: %s\n    描述: %s\n    内核: %s\n    架构: %s\n" \
+        "$REL" "$DESC" "$(uname -r)" "$(uname -m)"
+fi
+
+# ---------------------------------------------------------------
+head "2. 包管理器"
+# ---------------------------------------------------------------
+PKGMGR=''
+if command -v apk >/dev/null 2>&1; then
+    PKGMGR=apk
+    ok "apk（OpenWrt 25.12+）→ 请用 .apk 包"
+elif command -v opkg >/dev/null 2>&1; then
+    PKGMGR=opkg
+    ok "opkg（OpenWrt 24.10 及更早）→ 请用 .ipk 包"
+else
+    fail "既无 apk 也无 opkg，无法安装"
+fi
+
+# ---------------------------------------------------------------
+head "3. LuCI 框架"
+# ---------------------------------------------------------------
+if [ -d /www/luci-static/resources/view ]; then
+    ok "LuCI JS 视图架构（24.10+）— 界面兼容"
+elif [ -d /usr/lib/lua/luci ]; then
+    fail "LuCI 是老式 Lua 架构（19.07 及更早），本插件界面无法加载"
+else
+    fail "未检测到 LuCI，请先安装 luci-base"
+fi
+
+[ -d /usr/share/luci/menu.d ] || fail "缺 /usr/share/luci/menu.d（菜单无法注册）"
+[ -d /usr/share/rpcd/acl.d ]  || fail "缺 /usr/share/rpcd/acl.d（权限无法注册）"
+
+# ---------------------------------------------------------------
+head "4. 依赖组件"
+# ---------------------------------------------------------------
+if [ "$PKGMGR" = "apk" ]; then
+    INST="$(apk list --installed 2>/dev/null)"
+else
+    INST="$(opkg list-installed 2>/dev/null)"
+fi
+
+has_pkg() {
+    if [ "$PKGMGR" = "apk" ]; then
+        # apk 格式: "包名-版本 架构 {repo} (license) [installed]"
+        apk list --installed 2>/dev/null | awk -v p="$1" '
+            {
+                n = $1;
+                # 去掉末尾的 "-版本"：找最后一个 "-数字" 的位置
+                pos = 0;
+                for (i = 1; i < length(n); i++) {
+                    if (substr(n, i, 1) == "-" && substr(n, i+1, 1) ~ /[0-9]/) pos = i;
+                }
+                if (pos > 0) n = substr(n, 1, pos - 1);
+                if (n == p) found = 1;
+            }
+            END { exit !found }'
+    else
+        opkg list-installed 2>/dev/null | awk -v p="$1" '$1 == p { f = 1 } END { exit !f }'
+    fi
+}
+
+has_pkg luci-base         && ok "luci-base"         || fail "缺 luci-base"
+has_pkg rpcd-mod-iwinfo   && ok "rpcd-mod-iwinfo"   || warn "缺 rpcd-mod-iwinfo（读取无线状态会失败，需安装）"
+
+if has_pkg firewall4; then
+    ok "firewall4（nftables）— 隔离模式可用"
+elif has_pkg firewall; then
+    warn "只有 firewall3（iptables）— SSID 可用，但隔离模式不会生效"
+else
+    fail "未检测到防火墙组件"
+fi
+
+command -v nft >/dev/null 2>&1 || warn "缺 nft 命令（隔离模式依赖）"
+
+# ---------------------------------------------------------------
+head "5. 必需命令"
+# ---------------------------------------------------------------
+MISS=''
+for c in uci wifi iw ubus sed grep awk seq; do
+    if command -v "$c" >/dev/null 2>&1; then
+        detail "$c -> $(command -v $c)"
+    else
+        MISS="$MISS $c"
+    fi
+done
+[ -z "$MISS" ] && ok "全部就绪" || fail "缺少命令:$MISS"
+
+# ---------------------------------------------------------------
+head "6. 无线硬件"
+# ---------------------------------------------------------------
+if [ -d /sys/class/ieee80211 ]; then
+    NPHY=$(ls /sys/class/ieee80211 2>/dev/null | wc -l)
+    if [ "$NPHY" -gt 0 ]; then
+        ok "检测到 $NPHY 个无线 radio"
+        for phy_dir in /sys/class/ieee80211/*; do
+            phy=$(basename "$phy_dir")
+            drv=$(basename "$(readlink -f "$phy_dir/device/driver" 2>/dev/null)" 2>/dev/null)
+            [ -z "$drv" ] && drv="unknown"
+            ncur=$(iw phy "$phy" info 2>/dev/null | grep -c "^	Interface")
+            [ "$ncur" -eq 0 ] && ncur=$(ls "$phy_dir/device/net" 2>/dev/null | wc -l)
+
+            # 从 iw 读该 phy 支持的最大接口组合
+            maxtxt=$(iw phy "$phy" info 2>/dev/null | grep -m1 "valid interface combinations")
+            if [ -n "$maxtxt" ]; then
+                # 提取形如 #channels <= N 或 #{ managed } <= N
+                lim=$(echo "$maxtxt" | sed -n 's/.*managed[^0-9]*\([0-9]\+\).*/\1/p')
+                [ -z "$lim" ] && lim=$(echo "$maxtxt" | sed -n 's/.*AP[^0-9]*\([0-9]\+\).*/\1/p')
+            fi
+
+            detail "$phy 驱动=$drv 当前接口=$ncur"
+
+            case "$drv" in
+                mt76*|mt798*|mt791*|mt761*)
+                    ok "$phy 驱动 $drv — MediaTek，多 VAP 支持良好（常见 8–16 个）" ;;
+                ath10k*)
+                    warn "$phy 驱动 $drv — Qualcomm ath10k，VAP 支持有限（常 1–4 个），建议先实测" ;;
+                ath11k*|ath12k*)
+                    warn "$phy 驱动 $drv — Qualcomm，多 VAP 限制较严，务必先小量测试" ;;
+                brcm*|wl*)
+                    fail "$phy 驱动 $drv — Broadcom 闭源驱动，多 SSID 基本不可用" ;;
+                rtl*|rtw*)
+                    warn "$phy 驱动 $drv — Realtek，能力视型号而定，建议实测" ;;
+                *)
+                    warn "$phy 驱动 $drv — 未知驱动，建议先建 1 个 SSID 测试" ;;
+            esac
+        done
+    else
+        fail "未检测到无线硬件（本插件无意义）"
+    fi
+else
+    fail "无 /sys/class/ieee80211（无线未加载或无无线）"
+fi
+
+# ---------------------------------------------------------------
+head "7. 现有无线配置"
+# ---------------------------------------------------------------
+if command -v uci >/dev/null 2>&1; then
+    NAC=$(uci show wireless 2>/dev/null | grep -c "=wifi-iface")
+    detail "现有 wifi-iface: $NAC 个"
+
+    NMW=$(uci show wireless 2>/dev/null | grep -c "mw_managed")
+    if [ "$NMW" -gt 0 ]; then
+        warn "检测到已安装本插件建的配置（$NMW 处），可能已安装过或装卸不干净"
+    fi
+
+    # 是否已有同名 section
+    if uci -q get wireless.mw_1 >/dev/null 2>&1; then
+        warn "已存在 wireless.mw_1，新建时会自动跳过编号"
+    fi
+fi
+
+# ---------------------------------------------------------------
+head "8. 网段冲突检查"
+# ---------------------------------------------------------------
+# 插件隔离模式默认使用 192.168.11.0/24 起，逐个往上
+CONFLICT=''
+if command -v ip >/dev/null 2>&1; then
+    ACTIVE=$(ip -4 addr show 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+    ROUTES=$(ip -4 route show 2>/dev/null | awk '{print $1}' | grep '/')
+
+    for n in 11 12 13 14 15 16 17 18 19 20; do
+        seg="192.168.$n."
+        # 本机已有该网段？
+        if echo "$ACTIVE" | grep -q "^$seg"; then
+            CONFLICT="$CONFLICT 192.168.$n.0/24(已存在接口)"
+        fi
+        # WAN 侧默认网关在该网段？
+        GW=$(ip -4 route show default 2>/dev/null | awk '/via/{print $3}' | head -1)
+        if [ -n "$GW" ] && echo "$GW" | grep -q "^$seg"; then
+            CONFLICT="$CONFLICT 192.168.$n.0/24(WAN侧)"
+        fi
+    done
+fi
+
+if [ -z "$CONFLICT" ]; then
+    ok "192.168.11.x ~ 192.168.20.x 均空闲，隔离网段可用"
+else
+    warn "以下网段已占用，插件会自动跳过：$CONFLICT"
+fi
+
+# ---------------------------------------------------------------
+head "9. 磁盘空间"
+# ---------------------------------------------------------------
+AVAIL=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
+if [ -n "$AVAIL" ]; then
+    if [ "$AVAIL" -lt 100 ]; then
+        fail "根分区剩余 ${AVAIL}KB，空间不足（需至少 100KB）"
+    else
+        ok "根分区剩余 $((AVAIL/1024))MB，空间充足"
+    fi
+fi
+
+# ---------------------------------------------------------------
+head "10. 已安装检测"
+# ---------------------------------------------------------------
+if [ -n "$PKGMGR" ]; then
+    LINE=''
+    if [ "$PKGMGR" = "apk" ]; then
+        LINE=$(apk list --installed 2>/dev/null | sed -n '/^luci-app-multi-wifi-[0-9]/p' 2>/dev/null | sed -n '1p')
+    else
+        LINE=$(opkg list-installed 2>/dev/null | sed -n '/^luci-app-multi-wifi /p' 2>/dev/null | sed -n '1p')
+    fi
+    # 兜底：直接看安装文件是否存在
+    if [ -z "$LINE" ] && [ -f /www/luci-static/resources/view/multi-wifi/main.js ]; then
+        LINE="luci-app-multi-wifi (通过文件检测)"
+    fi
+    if [ -n "$LINE" ]; then
+        warn "已安装: $LINE"
+        detail "如需重装请先卸载"
+    else
+        ok "未安装，可以全新安装"
+    fi
+fi
+
+# ---------------------------------------------------------------
+# 结论
+# ---------------------------------------------------------------
+if [ $FAIL -gt 0 ]; then
+    VERDICT='fail'
+    VMSG="存在 $FAIL 个阻碍性问题，不建议安装"
+elif [ $WARN -gt 0 ]; then
+    VERDICT='warn'
+    VMSG="可以安装，但有 $WARN 项警告"
+else
+    VERDICT='ok'
+    VMSG="环境完全满足，可以放心安装"
+fi
+
+# 收集环境摘要
+SYS_REL=''; SYS_ARCH=''; SYS_KERNEL=''; SYS_MODEL=''
+[ -f /etc/openwrt_release ] && . /etc/openwrt_release 2>/dev/null
+SYS_REL="$DISTRIB_RELEASE"
+SYS_ARCH="$(uname -m)"
+SYS_KERNEL="$(uname -r)"
+[ -f /tmp/sysinfo/model ] && SYS_MODEL="$(cat /tmp/sysinfo/model)"
+
+# ---------- JSON 输出 ----------
+if [ $JSON -eq 1 ]; then
+    if [ $FAIL -gt 0 ]; then RC=1; elif [ $WARN -gt 0 ]; then RC=2; else RC=0; fi
+    printf '{"verdict":"%s","message":"%s","fail":%d,"warn":%d,"exit":%d,' \
+        "$VERDICT" "$(jesc "$VMSG")" "$FAIL" "$WARN" "$RC"
+    printf '"system":{"release":"%s","arch":"%s","kernel":"%s","model":"%s","pkgmgr":"%s"},' \
+        "$(jesc "$SYS_REL")" "$(jesc "$SYS_ARCH")" "$(jesc "$SYS_KERNEL")" \
+        "$(jesc "$SYS_MODEL")" "$PKGMGR"
+    printf '"items":[%s]}\n' "$JITEMS"
+    exit $RC
+fi
+
+# ---------- 只输出摘要 ----------
+if [ $INFO -eq 1 ]; then
+    if [ $FAIL -gt 0 ]; then RC=1; elif [ $WARN -gt 0 ]; then RC=2; else RC=0; fi
+    printf '%s|%d|%d|%s|%s|%s\n' "$VERDICT" "$FAIL" "$WARN" "$SYS_REL" "$PKGMGR" "$SYS_MODEL"
+    exit $RC
+fi
+
+# ---------- 文本输出 ----------
+printf "\n"
+if [ $FAIL -gt 0 ]; then
+    printf "${R}结论: %s${D}\n" "$VMSG"
+    [ $QUIET -eq 0 ] && printf "请解决上述 ✗ 项后重试。\n"
+    exit 1
+elif [ $WARN -gt 0 ]; then
+    printf "${Y}结论: %s${D}\n" "$VMSG"
+    [ $QUIET -eq 0 ] && printf "警告项不阻止安装，但可能影响部分功能。\n"
+    exit 2
+else
+    printf "${G}结论: %s${D}\n" "$VMSG"
+    exit 0
+fi

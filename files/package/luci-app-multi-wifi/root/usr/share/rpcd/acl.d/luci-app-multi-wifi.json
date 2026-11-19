@@ -1,0 +1,35 @@
+{
+	"luci-app-multi-wifi": {
+		"description": "Grant access to Multi WiFi configuration",
+		"read": {
+			"file": {
+				"/usr/sbin/mwctl": [ "exec" ],
+				"/usr/sbin/mwcheck": [ "exec" ],
+				"/usr/sbin/mwclients": [ "exec" ],
+				"/usr/sbin/mwnode": [ "exec" ],
+				"/sbin/wifi": [ "exec" ],
+				"/etc/init.d/network": [ "exec" ],
+				"/etc/init.d/firewall": [ "exec" ],
+				"/etc/init.d/mw-singbox": [ "exec" ]
+			},
+			"ubus": {
+				"iwinfo": [ "info", "assoclist" ],
+				"network.wireless": [ "status" ],
+				"service": [ "list" ]
+			},
+			"uci": [ "wireless", "network", "dhcp", "firewall", "multiwifi" ]
+		},
+		"write": {
+			"file": {
+				"/usr/sbin/mwctl": [ "exec" ],
+				"/usr/sbin/mwnode": [ "exec" ],
+				"/etc/init.d/mw-singbox": [ "exec" ],
+				"/sbin/wifi": [ "exec" ]
+			},
+			"ubus": {
+				"network.wireless": [ "reconf", "up", "down" ]
+			},
+			"uci": [ "wireless", "network", "dhcp", "firewall", "multiwifi" ]
+		}
+	}
+}

@@ -1,0 +1,23 @@
+#!/bin/sh /etc/rc.common
+# mw-singbox - Multi WiFi 每 SSID 节点分流的 sing-box 实例
+START=95
+STOP=10
+USE_PROCD=1
+PROG=/usr/bin/sing-box
+CONF=/etc/sing-box/config.json
+
+start_service() {
+	[ -x "$PROG" ] || { logger -t mw-singbox "sing-box 未安装"; return 0; }
+	[ -s "$CONF" ] || { logger -t mw-singbox "无分流配置，跳过"; return 0; }
+
+	procd_open_instance
+	procd_set_param command "$PROG" run -c "$CONF"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger multiwifi
+}

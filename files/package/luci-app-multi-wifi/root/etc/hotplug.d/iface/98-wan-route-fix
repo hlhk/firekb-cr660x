@@ -1,0 +1,85 @@
+#!/bin/sh
+# 98-wan-route-fix: 兜底修复 DHCP WAN 缺少 link 路由导致的默认路由缺失
+#
+# 现象：DHCP 拿到地址、能 ping 通网关，但外网全部 "Network unreachable"。
+# 原因：内核未自动生成 "A.B.C.D/M dev <if> scope link src <ip>" 直连路由，
+#       netifd 装 "default via <gw>" 时被拒绝 (RTNETLINK answers: Network unreachable)。
+#
+# 本脚本在 DHCP WAN 口 up 后补齐 link 路由，并确保默认路由存在。
+
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || exit 0
+[ -n "$DEVICE" ] || exit 0
+
+case "$INTERFACE" in
+	wan|wan[0-9]*) ;;
+	*) exit 0 ;;
+esac
+
+[ "$(uci -q get network.$INTERFACE.proto)" = "dhcp" ] || exit 0
+
+# 等地址就位（最多约 6 秒）
+i=0
+ipaddr=
+while [ $i -lt 12 ]; do
+	ipaddr="$(ip -4 -o addr show dev "$DEVICE" 2>/dev/null | awk '{print $4; exit}')"
+	[ -n "$ipaddr" ] && break
+	sleep 0.5
+	i=$((i + 1))
+done
+case "$ipaddr" in
+	*/*) ;;
+	*) exit 0 ;;
+esac
+
+addr="${ipaddr%/*}"
+prefix="${ipaddr#*/}"
+case "$prefix" in
+	''|*[!0-9]*) exit 0 ;;
+esac
+
+# 由 地址/前缀 计算网络号（纯 shell 位运算）
+IFS='.'; set -- $addr; IFS=' '
+o1=$1; o2=$2; o3=$3; o4=$4
+[ -n "$o4" ] || exit 0
+
+m1=0; m2=0; m3=0; m4=0
+b=$prefix
+if [ $b -ge 8 ]; then m1=255; b=$((b-8)); elif [ $b -gt 0 ]; then m1=$((256 - (1 << (8-b)))); b=0; fi
+if [ $b -ge 8 ]; then m2=255; b=$((b-8)); elif [ $b -gt 0 ]; then m2=$((256 - (1 << (8-b)))); b=0; fi
+if [ $b -ge 8 ]; then m3=255; b=$((b-8)); elif [ $b -gt 0 ]; then m3=$((256 - (1 << (8-b)))); b=0; fi
+if [ $b -ge 8 ]; then m4=255; b=$((b-8)); elif [ $b -gt 0 ]; then m4=$((256 - (1 << (8-b)))); b=0; fi
+
+n1=$((o1 & m1)); n2=$((o2 & m2)); n3=$((o3 & m3)); n4=$((o4 & m4))
+net="$n1.$n2.$n3.$n4"
+
+# 网关（DHCP 提供）
+gw="$(ubus call "network.interface.$INTERFACE" status 2>/dev/null \
+	| sed -n 's/.*"nexthop": "\([0-9.]*\)".*/\1/p' | head -1)"
+[ -n "$gw" ] || gw="$(ip route show dev "$DEVICE" 2>/dev/null \
+	| awk '/via /{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}')"
+
+# 关键：如果同前缀存在 “X dev DEV via GW” 这类自引用静态路由，先删掉。
+# 否则 link 路由与它同目标前缀冲突会被内核拒绝，默认路由也随之失效。
+while ip route show "${net}/${prefix}" 2>/dev/null | grep -q "via "; do
+	if ip route del "${net}/${prefix}" dev "$DEVICE" via "$gw" 2>/dev/null; then
+		logger -t wan-route-fix "removed bogus static route ${net}/${prefix} via ${gw} dev ${DEVICE}"
+	else
+		break
+	fi
+done
+
+# 补 link 路由（用 replace 保证幂等）
+if ! ip route show | grep -q "^${net}/${prefix} dev ${DEVICE}"; then
+	if ip route replace "${net}/${prefix}" dev "$DEVICE" src "$addr" 2>/dev/null; then
+		logger -t wan-route-fix "added link route ${net}/${prefix} dev ${DEVICE} src ${addr}"
+	fi
+fi
+
+# 确保默认路由
+if [ -n "$gw" ] && ! ip route show default | grep -q "via ${gw}"; then
+	if ip route replace default via "$gw" dev "$DEVICE" 2>/dev/null; then
+		logger -t wan-route-fix "added default route via ${gw} dev ${DEVICE}"
+	fi
+fi
+
+exit 0

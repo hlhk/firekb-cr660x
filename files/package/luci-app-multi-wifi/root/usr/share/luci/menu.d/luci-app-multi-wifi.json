@@ -1,0 +1,13 @@
+{
+	"admin/services/multi-wifi": {
+		"title": "Multi WiFi",
+		"order": 45,
+		"action": {
+			"type": "view",
+			"path": "multi-wifi/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-multi-wifi" ]
+		}
+	}
+}

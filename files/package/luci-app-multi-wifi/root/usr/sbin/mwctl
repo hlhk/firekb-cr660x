@@ -1,0 +1,400 @@
+#!/bin/sh
+#
+# mwctl - Multi WiFi 后端控制脚本
+#
+# 用法:
+#   mwctl generate <radio> <count> <prefix> <key> <mode> [start_idx]
+#   mwctl delete <secname>
+#   mwctl list
+#   mwctl cleanup-isolated
+#
+# mode:
+#   lan    - 所有 SSID 绑定到 lan，共用 192.168.8.0/24
+#   iso    - 每个 SSID 独立网段 192.168.(10+n).0/24，互相隔离，仅可上网
+#
+# 隔离模式会为每个 SSID 创建:
+#   network.mwbrN  (bridge device)
+#   network.mwN    (interface, static 192.168.(10+n).1/24)
+#   dhcp.mwN       (dhcp server, start=100 limit=100)
+#   firewall.mwzoneN (zone, input=REJECT forward=REJECT)
+#   firewall.mwfwdN  (forwarding -> wan)
+#
+
+set -u
+
+PREFIX_SEC='mw_'
+ISO_BASE_OCTET=10
+ISO_POOL_START=100
+ISO_POOL_LIMIT=100
+
+log() { echo "$@" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+# 统计某个 radio 上的 AP 数
+count_aps() {
+	uci show wireless 2>/dev/null | \
+		grep -E "device='$1'" | \
+		grep -c "\.device="
+}
+
+# 找到某 radio 上已用的最大编号，避免重名
+max_index() {
+	local max=0 n s
+	for s in $(uci show wireless 2>/dev/null | \
+		sed -n "s/^wireless\.\(${PREFIX_SEC}[0-9]\+\)=wifi-iface$/\1/p"); do
+		n="${s#$PREFIX_SEC}"
+		if [ "$n" -gt "$max" ] 2>/dev/null; then
+			max="$n"
+		fi
+	done
+	echo "$max"
+}
+
+# 找一个未占用的网段序号（1..200），保证 192.168.(10+n) 不冲突
+free_iso_slot() {
+	local n=1
+	while [ "$n" -le 200 ]; do
+		local octet=$((ISO_BASE_OCTET + n))
+		if ! uci -q get "network.mw${n}.ipaddr" >/dev/null 2>&1; then
+			echo "$n"
+			return 0
+		fi
+		n=$((n + 1))
+	done
+	return 1
+}
+
+# ---------- 创建隔离模式的网络/防火墙配套 ----------
+iso_provision() {
+	local idx="$1"
+	local bridgename="mwbr${idx}"
+	local ifname="mw${idx}"
+	local octet=$((ISO_BASE_OCTET + idx))
+
+	log "  [iso] 创建 192.168.${octet}.1/24  (bridge=${bridgename}, iface=${ifname})"
+
+	# 1. bridge device —— 成员由 netifd 自动加入（接口的 device 就是它）
+	uci -q delete "network.${bridgename}" 2>/dev/null
+	uci set "network.${bridgename}=device"
+	uci set "network.${bridgename}.type=bridge"
+	uci set "network.${bridgename}.name=br-${bridgename}"
+	uci set "network.${bridgename}.bridge_empty=1"
+
+	# 2. 静态接口
+	uci -q delete "network.${ifname}" 2>/dev/null
+	uci set "network.${ifname}=interface"
+	uci set "network.${ifname}.device=br-${bridgename}"
+	uci set "network.${ifname}.proto=static"
+	uci set "network.${ifname}.ipaddr=192.168.${octet}.1"
+	uci set "network.${ifname}.netmask=255.255.255.0"
+	uci set "network.${ifname}.mw_managed=1"
+
+	# 3. DHCP
+	uci -q delete "dhcp.${ifname}" 2>/dev/null
+	uci set "dhcp.${ifname}=dhcp"
+	uci set "dhcp.${ifname}.interface=${ifname}"
+	uci set "dhcp.${ifname}.start=${ISO_POOL_START}"
+	uci set "dhcp.${ifname}.limit=${ISO_POOL_LIMIT}"
+	uci set "dhcp.${ifname}.leasetime=12h"
+	uci set "dhcp.${ifname}.mw_managed=1"
+
+	# 4. 防火墙 zone
+	#    同时设置两个字段：
+	#      network='mwN'     —— LuCI 的「接口→防火墙设置」下拉框靠它识别归属，
+	#                           只写 device 会导致界面显示"未指定"，用户一保存就会解绑
+	#      device='br-mwbrN' —— fw4 直接绑定网桥，不依赖 netifd 是否已就绪，更可靠
+	#    策略：input=ACCEPT（路由器可访问客户端，DHCP/DNS/管理正常）
+	#          output=ACCEPT（客户端可访问路由器）
+	#          forward=REJECT（禁止客户端之间、以及与主网段互访；仅经 forwarding 放行到 WAN）
+	#    注意：不要加自定义 option，fw4 会报 "unknown option" 警告。
+	uci -q delete "firewall.mwzone${idx}" 2>/dev/null
+	uci set "firewall.mwzone${idx}=zone"
+	uci set "firewall.mwzone${idx}.name=mw${idx}"
+	uci set "firewall.mwzone${idx}.network=${ifname}"
+	uci set "firewall.mwzone${idx}.device=br-${bridgename}"
+	uci set "firewall.mwzone${idx}.input=ACCEPT"
+	uci set "firewall.mwzone${idx}.output=ACCEPT"
+	uci set "firewall.mwzone${idx}.forward=REJECT"
+
+	# 5. forwarding -> wan（只允许出外网）
+	uci -q delete "firewall.mwfwd${idx}" 2>/dev/null
+	uci set "firewall.mwfwd${idx}=forwarding"
+	uci set "firewall.mwfwd${idx}.src=mw${idx}"
+	uci set "firewall.mwfwd${idx}.dest=wan"
+}
+
+# ---------- 删除隔离模式的配套 ----------
+iso_deprovision() {
+	local sec="$1"
+	local idx="${sec#$PREFIX_SEC}"
+	local ifname="mw${idx}"
+	local bridgename="mwbr${idx}"
+
+	log "  [iso] 回收 接口/网桥/DHCP/防火墙 (${ifname})"
+
+	uci -q delete "dhcp.${ifname}" 2>/dev/null
+	uci -q delete "network.${ifname}" 2>/dev/null
+	uci -q delete "network.${bridgename}" 2>/dev/null
+	uci -q delete "firewall.mwzone${idx}" 2>/dev/null
+	uci -q delete "firewall.mwfwd${idx}" 2>/dev/null
+}
+
+# ---------- generate ----------
+cmd_generate() {
+	local radio="$1"
+	local count="$2"
+	local prefix="$3"
+	local key="$4"
+	local mode="$5"
+	local start="${6:-0}"
+
+	[ -n "$radio" ] || die "缺少 radio"
+	[ "$count" -ge 1 ] 2>/dev/null || die "数量无效: $count"
+
+	local maxidx
+	maxidx=$(max_index)
+	local i
+	local n
+	local sec
+
+	for i in $(seq 1 "$count"); do
+		n=$((maxidx + i))
+		sec="${PREFIX_SEC}${n}"
+
+		uci set "wireless.${sec}=wifi-iface"
+		uci set "wireless.${sec}.device=${radio}"
+		uci set "wireless.${sec}.mode=ap"
+		uci set "wireless.${sec}.ssid=${prefix}-${n}"
+		uci set "wireless.${sec}.mw_managed=1"
+		uci set "wireless.${sec}.disabled=0"
+
+		if [ -n "$key" ] && [ "${#key}" -ge 8 ]; then
+			uci set "wireless.${sec}.encryption=psk2"
+			uci set "wireless.${sec}.key=${key}"
+		else
+			uci set "wireless.${sec}.encryption=none"
+		fi
+
+		if [ "$mode" = "iso" ]; then
+			iso_provision "$n"
+			uci set "wireless.${sec}.network=mw${n}"
+			uci set "wireless.${sec}.mw_iso=1"
+			uci set "wireless.${sec}.isolate=1"
+		else
+			uci set "wireless.${sec}.network=lan"
+		fi
+
+		log "  + ${sec}  ssid=${prefix}-${n}"
+	done
+
+	uci commit wireless
+	uci commit network
+	uci commit dhcp
+	uci commit firewall
+
+	# 隔离模式必须重载 firewall，否则 fw4 不会把新网桥绑进 zone，
+	# 运行态规则缺失会导致接口落入默认策略（表现为"挂到 lan 上"）。
+	if [ "$mode" = "iso" ]; then
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+		log "  [iso] 已重载 firewall"
+	fi
+
+	echo "created=$count"
+}
+
+# ---------- delete ----------
+cmd_delete() {
+	local sec="$1"
+	[ -n "$sec" ] || die "缺少 section 名"
+
+	local is_iso
+	is_iso=$(uci -q get "wireless.${sec}.mw_iso")
+
+	# 即使 wifi-iface 已不存在（例如手动删掉了），
+	# 只要配套的 network.mwN 还在，就按隔离模式回收，避免留下孤儿网段。
+	if [ "${is_iso:-0}" = "1" ] || \
+	   uci -q get "network.mw${sec#${PREFIX_SEC}}" >/dev/null 2>&1; then
+		iso_deprovision "$sec"
+		is_iso=1
+	fi
+
+	if uci -q get "wireless.${sec}" >/dev/null 2>&1; then
+		uci -q delete "wireless.${sec}"
+	else
+		log "  (wifi-iface ${sec} 已不存在，仅回收配套)"
+	fi
+	uci commit wireless
+	uci commit network
+	uci commit dhcp
+	uci commit firewall
+
+	# 删掉隔离网段后同样要重载 firewall，清理残留的 zone 跳转
+	if [ "${is_iso:-0}" = "1" ]; then
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+	fi
+
+	echo "deleted=$sec"
+}
+
+# ---------- list ----------
+cmd_list() {
+	local n=0
+	local s
+	local ssid
+	local band
+	local net
+	local iso
+	local dis
+	for s in $(uci show wireless 2>/dev/null | \
+		sed -n "s/^wireless\.\(${PREFIX_SEC}[0-9]\+\)=wifi-iface$/\1/p"); do
+		ssid=$(uci -q get "wireless.${s}.ssid")
+		net=$(uci -q get "wireless.${s}.network")
+		iso=$(uci -q get "wireless.${s}.mw_iso")
+		dis=$(uci -q get "wireless.${s}.disabled")
+		band=$(uci -q get "wireless.$(uci -q get "wireless.${s}.device").band")
+		echo "${s}|${ssid}|${band}|${net}|${iso:-0}|${dis:-0}"
+		n=$((n + 1))
+	done
+	echo "total=$n"
+}
+
+# ---------- 清理所有隔离残留 ----------
+cmd_cleanup_iso() {
+	local n=0
+	local s
+	local idx
+	for s in $(uci show wireless 2>/dev/null | \
+		sed -n "s/^wireless\.\(${PREFIX_SEC}[0-9]\+\)=wifi-iface$/\1/p"); do
+		if [ "$(uci -q get "wireless.${s}.mw_iso")" = "1" ]; then
+			idx="${s#$PREFIX_SEC}"
+			iso_deprovision "$s"
+			uci -q delete "wireless.${s}"
+			n=$((n + 1))
+		fi
+	done
+	uci commit wireless
+	uci commit network
+	uci commit dhcp
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+	echo "cleaned=$n"
+}
+
+# ---------- 校验隔离接口是否真的进入各自 zone ----------
+cmd_check_iso() {
+	local bad=0 n s ifname dev zone znet
+	for s in $(uci show wireless 2>/dev/null | \
+		sed -n "s/^wireless\.\(${PREFIX_SEC}[0-9]\+\)=wifi-iface$/\1/p"); do
+		[ "$(uci -q get "wireless.${s}.mw_iso")" = "1" ] || continue
+		n="${s#$PREFIX_SEC}"
+		ifname="mw${n}"
+		dev="br-mwbr${n}"
+		zone=$(fw4 -q device "$dev" 2>/dev/null)
+		znet=$(fw4 -q network "$ifname" 2>/dev/null)
+		# device 与 network 两条路径都应指向 mwN
+		if [ "$zone" = "mw${n}" ] && [ "$znet" = "mw${n}" ]; then
+			echo "ok|${s}|${dev}|${zone}"
+		else
+			echo "BAD|${s}|${dev}|dev=${zone:-none},net=${znet:-none}"
+			bad=$((bad + 1))
+		fi
+	done
+	echo "bad=$bad"
+	[ "$bad" -eq 0 ]
+}
+
+# ---------- 清理孤儿网段 ----------
+# 孤儿定义：network/dhcp/firewall 里存在 mwN 相关配置，
+#           但 wireless.mw_N 这个 wifi-iface 已经不存在。
+#           典型来源：手动删了 wifi-iface、或旧版本 delete 的遗漏。
+cmd_cleanup_orphans() {
+	local dry=0
+	if [ "${1:-}" = "-n" ] || [ "${1:-}" = "--dry-run" ]; then
+		dry=1
+	fi
+
+	local n=0 idx kept=0
+	# 收集所有出现过的隔离序号
+	local idxs=""
+	local s
+
+	# 1. network.mwN (interface)
+	for s in $(uci show network 2>/dev/null | \
+		sed -n "s/^network\.mw\([0-9]\+\)=interface$/\1/p"); do
+		idxs="$idxs $s"
+	done
+	# 2. network.mwbrN (bridge device)
+	for s in $(uci show network 2>/dev/null | \
+		sed -n "s/^network\.mwbr\([0-9]\+\)=device$/\1/p"); do
+		idxs="$idxs $s"
+	done
+	# 3. dhcp.mwN
+	for s in $(uci show dhcp 2>/dev/null | \
+		sed -n "s/^dhcp\.mw\([0-9]\+\)=dhcp$/\1/p"); do
+		idxs="$idxs $s"
+	done
+	# 4. firewall.mwzoneN / mwfwdN
+	for s in $(uci show firewall 2>/dev/null | \
+		sed -n "s/^firewall\.mwzone\([0-9]\+\)=zone$/\1/p"); do
+		idxs="$idxs $s"
+	done
+	for s in $(uci show firewall 2>/dev/null | \
+		sed -n "s/^firewall\.mwfwd\([0-9]\+\)=forwarding$/\1/p"); do
+		idxs="$idxs $s"
+	done
+
+	# 去重
+	idxs=$(for i in $idxs; do echo "$i"; done | sort -n -u)
+
+	[ -z "$idxs" ] && { echo "orphans=0"; return 0; }
+
+	for idx in $idxs; do
+		# 有对应无线接口说明不是孤儿
+		if uci -q get "wireless.${PREFIX_SEC}${idx}" >/dev/null 2>&1; then
+			kept=$((kept + 1))
+			continue
+		fi
+
+		log "  孤儿 mw${idx}: 删除 network.mw${idx} / network.mwbr${idx} / dhcp.mw${idx} / firewall.mwzone${idx} / firewall.mwfwd${idx}"
+		if [ "$dry" -eq 1 ]; then
+			n=$((n + 1))
+			continue
+		fi
+
+		uci -q delete "dhcp.mw${idx}" 2>/dev/null
+		uci -q delete "network.mw${idx}" 2>/dev/null
+		uci -q delete "network.mwbr${idx}" 2>/dev/null
+		uci -q delete "firewall.mwzone${idx}" 2>/dev/null
+		uci -q delete "firewall.mwfwd${idx}" 2>/dev/null
+		n=$((n + 1))
+	done
+
+	if [ "$dry" -eq 0 ] && [ "$n" -gt 0 ]; then
+		uci commit network
+		uci commit dhcp
+		uci commit firewall
+		/etc/init.d/network reload >/dev/null 2>&1 || true
+		/etc/init.d/firewall reload >/dev/null 2>&1 || true
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+	fi
+
+	if [ "$dry" -eq 1 ]; then
+		echo "would_remove=$n kept=$kept"
+	else
+		echo "orphans_removed=$n kept=$kept"
+	fi
+}
+
+cmd="${1:-}"; shift 2>/dev/null || true
+case "$cmd" in
+	generate)         cmd_generate "$@" ;;
+	delete)           cmd_delete "$@" ;;
+	list)             cmd_list "$@" ;;
+	cleanup-iso)      cmd_cleanup_iso "$@" ;;
+	cleanup-orphans)  cmd_cleanup_orphans "$@" ;;
+	check-iso)        cmd_check_iso "$@" ;;
+	*)                die "用法: mwctl {generate|delete|list|cleanup-iso|cleanup-orphans [-n]|check-iso} ..." ;;
+esac

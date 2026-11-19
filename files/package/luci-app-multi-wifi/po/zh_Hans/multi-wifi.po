@@ -1,0 +1,218 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Multi WiFi"
+msgstr "多 WiFi 管理"
+
+msgid "Multi WiFi — 批量创建多个 SSID"
+msgstr "多 WiFi — 批量创建多个 SSID"
+
+msgid "在此一次性创建多个 WiFi 信号（VAP）。填写数量后点「生成」即可批量创建，生成的 SSID 可在下方逐个修改名称和密码。"
+msgstr "在此一次性创建多个 WiFi 信号（VAP）。填写数量后点「生成」即可批量创建，生成的 SSID 可在下方逐个修改名称和密码。"
+
+msgid "硬件能力与风险提示"
+msgstr "硬件能力与风险提示"
+
+msgid "频段"
+msgstr "频段"
+
+msgid "设备"
+msgstr "设备"
+
+msgid "理论上限"
+msgstr "理论上限"
+
+msgid "建议上限"
+msgstr "建议上限"
+
+msgid "当前已用"
+msgstr "当前已用"
+
+msgid "状态"
+msgstr "状态"
+
+msgid "正常"
+msgstr "正常"
+
+msgid "接近上限"
+msgstr "接近上限"
+
+msgid "已达上限"
+msgstr "已达上限"
+
+msgid "批量生成"
+msgstr "批量生成"
+
+msgid "目标频段"
+msgstr "目标频段"
+
+msgid "创建数量"
+msgstr "创建数量"
+
+msgid "SSID 前缀"
+msgstr "SSID 前缀"
+
+msgid "统一密码"
+msgstr "统一密码"
+
+msgid "生成 SSID"
+msgstr "生成 SSID"
+
+msgid "已创建的 SSID"
+msgstr "已创建的 SSID"
+
+msgid "启用"
+msgstr "启用"
+
+msgid "密码"
+msgstr "密码"
+
+msgid "网络"
+msgstr "网络"
+
+msgid "操作"
+msgstr "操作"
+
+msgid "删除"
+msgstr "删除"
+
+msgid "保存并重启无线"
+msgstr "保存并重启无线"
+
+msgid "取消"
+msgstr "取消"
+
+msgid "确定删除"
+msgstr "确定删除"
+
+msgid "请选择频段"
+msgstr "请选择频段"
+
+msgid "数量必须是 1~30 之间"
+msgstr "数量必须是 1~30 之间"
+
+msgid "密码至少 8 位，或留空表示开放网络"
+msgstr "密码至少 8 位，或留空表示开放网络"
+
+msgid "我坚持要试"
+msgstr "我坚持要试"
+
+msgid "继续"
+msgstr "继续"
+
+msgid "取消（推荐）"
+msgstr "取消（推荐）"
+
+msgid "超过上限会导致整个频段的 hostapd 崩溃 —— 所有 SSID（包括主 SSID）全部掉线，必须重启无线才能恢复。"
+msgstr "超过上限会导致整个频段的 hostapd 崩溃 —— 所有 SSID（包括主 SSID）全部掉线，必须重启无线才能恢复。"
+
+msgid "网络模式"
+msgstr "网络模式"
+
+msgid "并入主网络 — 同 192.168.8.x，设备之间互通"
+msgstr "并入主网络 — 同 192.168.8.x，设备之间互通"
+
+msgid "隔离模式 — 每个 SSID 独立网段，互相不可见，仅能上网"
+msgstr "隔离模式 — 每个 SSID 独立网段，互相不可见，仅能上网"
+
+msgid "并入主网络：所有设备在同一局域网，可互访（适合多区域覆盖）。"
+msgstr "并入主网络：所有设备在同一局域网，可互访（适合多区域覆盖）。"
+
+msgid "网段"
+msgstr "网段"
+
+msgid "与主网络同网段"
+msgstr "与主网络同网段"
+
+msgid "正在创建 "
+msgstr "正在创建 "
+
+msgid " 个 SSID"
+msgstr " 个 SSID"
+
+msgid "（隔离模式，需要重建网络配置，约需 20 秒）"
+msgstr "（隔离模式，需要重建网络配置，约需 20 秒）"
+
+msgid "创建失败："
+msgstr "创建失败："
+
+msgid "执行失败："
+msgstr "执行失败："
+
+msgid "删除失败："
+msgstr "删除失败："
+
+msgid "正在检测环境…"
+msgstr "正在检测环境…"
+
+msgid "重新检测"
+msgstr "重新检测"
+
+msgid "查看详情"
+msgstr "查看详情"
+
+msgid "收起详情"
+msgstr "收起详情"
+
+msgid "自检脚本无输出"
+msgstr "自检脚本无输出"
+
+msgid "无法解析自检结果"
+msgstr "无法解析自检结果"
+
+msgid "自检不可用："
+msgstr "自检不可用："
+
+msgid "系统"
+msgstr "系统"
+
+msgid "在线设备"
+msgstr "在线设备"
+
+msgid "台"
+msgstr "台"
+
+msgid "暂无设备连接"
+msgstr "暂无设备连接"
+
+msgid "环境检测未通过，请先解决上方红色问题项"
+msgstr "环境检测未通过，请先解决上方红色问题项"
+
+msgid "环境检测未通过，暂时无法创建 SSID。请展开上方详情查看红色问题项。"
+msgstr "环境检测未通过，暂时无法创建 SSID。请展开上方详情查看红色问题项。"
+
+msgid "清理残留网段"
+msgstr "清理残留网段"
+
+msgid "扫描并删除已无对应 SSID 的隔离网段（network/dhcp/firewall）"
+msgstr "扫描并删除已无对应 SSID 的隔离网段（network/dhcp/firewall）"
+
+msgid "没有发现残留网段，配置是干净的。"
+msgstr "没有发现残留网段，配置是干净的。"
+
+msgid "发现残留网段"
+msgstr "发现残留网段"
+
+msgid "检测到 "
+msgstr "检测到 "
+
+msgid " 个已无对应 SSID 的隔离网段，删除后会释放这些网段和防火墙规则。"
+msgstr " 个已无对应 SSID 的隔离网段，删除后会释放这些网段和防火墙规则。"
+
+msgid "确认清理"
+msgstr "确认清理"
+
+msgid "已清理 "
+msgstr "已清理 "
+
+msgid " 个残留网段。"
+msgstr " 个残留网段。"
+
+msgid "清理失败："
+msgstr "清理失败："
+
+msgid "扫描失败："
+msgstr "扫描失败："
+
+msgid "孤儿"
+msgstr "孤儿"

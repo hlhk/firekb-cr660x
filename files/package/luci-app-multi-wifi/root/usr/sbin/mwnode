@@ -1,0 +1,332 @@
+#!/bin/sh
+#
+# mwnode - Multi WiFi 节点绑定 / 订阅导入 / sing-box 分流后端
+#
+# 用法:
+#   mwnode import-link <sec> <share-link>
+#   mwnode import-sub  <sec> <sub-url>
+#   mwnode bind        <sec> <node-id>
+#   mwnode unbind      <sec>
+#   mwnode apply
+#   mwnode list-nodes
+#   mwnode list-binds
+#   mwnode get         <sec>
+#   mwnode del-node    <node-id>
+#   mwnode status
+#
+# 数据存储 /etc/config/multiwifi:
+#   multiwifi.node_<id> = node   .type .remark .json
+#   multiwifi.bind_<sec> = bind  .node .iface
+#
+
+set -u
+
+SHARE=/usr/share/mw-singbox
+PREFIX_NODE='node_'
+PREFIX_BIND='bind_'
+CFG=/etc/config/multiwifi
+SB_CFG=/etc/sing-box/config.json
+SB_TMP=/tmp/sing-box-mw.json
+TPROXY_PORT=7893
+
+log() { echo "$@" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+ensure_cfg() {
+	[ -f "$CFG" ] || { echo "config multiwifi" > "$CFG"; }
+}
+
+# ---------- 节点 ----------
+next_node_id() {
+	local max=0 s
+	for s in $(uci show multiwifi 2>/dev/null | sed -n "s/^multiwifi\.${PREFIX_NODE}\([0-9]\+\)=node$/\1/p"); do
+		[ "$s" -gt "$max" ] 2>/dev/null && max="$s"
+	done
+	echo $((max + 1))
+}
+
+add_node() {
+	local type="$1" json="$2" remark="$3" id
+	ensure_cfg
+	id=$(next_node_id)
+	uci -q set "multiwifi.${PREFIX_NODE}${id}=node"
+	uci -q set "multiwifi.${PREFIX_NODE}${id}.type=${type}"
+	uci -q set "multiwifi.${PREFIX_NODE}${id}.remark=${remark}"
+	uci -q set "multiwifi.${PREFIX_NODE}${id}.json=${json}"
+	uci -q commit multiwifi
+	echo "$id"
+}
+
+clean_remark() {
+	echo "$1" | tr -d '|\n\r' | cut -c1-40
+}
+
+# 解析一条链接 -> "type json"
+parse_one() {
+	local link="$1" res
+	res=$("$SHARE/parse.uc" "$link" 2>/dev/null)
+	case "$res" in
+		OK\|*) echo "$res" | cut -d'|' -f2- ;;
+		*) return 1 ;;
+	esac
+}
+
+# ---------- import-link ----------
+cmd_import_link() {
+	local sec="$1" link="$2" out type json remark id
+	[ -n "$sec" ] && [ -n "$link" ] || die "用法: mwnode import-link <sec> <share-link>"
+	ensure_cfg
+	out=$(parse_one "$link") || die "无法解析链接"
+	type=$(echo "$out" | cut -d'|' -f1)
+	json=$(echo "$out" | cut -d'|' -f2-)
+	remark=$(echo "$link" | sed -n 's/.*#\(.*\)$/\1/p')
+	[ -z "$remark" ] || remark=$("$SHARE/urldec.uc" "$remark")
+	[ -n "$remark" ] || remark="${type}-$(date +%H%M%S)"
+	remark=$(clean_remark "$remark")
+	id=$(add_node "$type" "$json" "$remark")
+	cmd_bind "$sec" "$id" >/dev/null
+	echo "node=$id type=$type remark=$remark bound=$sec"
+}
+
+# 只导入链接，不绑定
+cmd_add_link() {
+	local link="$1" out type json remark id
+	[ -n "$link" ] || die "用法: mwnode add-link <share-link>"
+	ensure_cfg
+	out=$(parse_one "$link") || die "无法解析链接"
+	type=$(echo "$out" | cut -d'|' -f1)
+	json=$(echo "$out" | cut -d'|' -f2-)
+	remark=$(echo "$link" | sed -n 's/.*#\(.*\)$/\1/p')
+	[ -z "$remark" ] || remark=$("$SHARE/urldec.uc" "$remark")
+	[ -n "$remark" ] || remark="${type}-$(date +%H%M%S)"
+	remark=$(clean_remark "$remark")
+	id=$(add_node "$type" "$json" "$remark")
+	echo "node=$id type=$type remark=$remark"
+}
+
+# ---------- import-sub ----------
+cmd_import_sub() {
+	local sec="" url="" raw body t json remark nid cnt=0
+	# 兼容旧调用 import-sub <sec> <url>；sec 不再自动绑定，节点全部进列表
+	if [ "$#" -ge 2 ]; then
+		sec="$1"
+		url="$2"
+	else
+		url="${1:-}"
+	fi
+	[ -n "$url" ] || die "用法: mwnode import-sub <sub-url>"
+	ensure_cfg
+
+	raw=""
+	http=$(curl -4 -k -L --compressed -sS -m 20 -A "v2rayN/6.0" -H "Accept-Encoding: identity" -o /tmp/.mwraw -w '%{http_code}' "$url" 2>/tmp/.mwerr) || http="000"
+	# 服务器仍返回 gzip 时再解一层
+	if [ -s /tmp/.mwraw ] && gzip -t /tmp/.mwraw 2>/dev/null; then
+		gzip -dc /tmp/.mwraw > /tmp/.mwraw2 2>/dev/null && mv /tmp/.mwraw2 /tmp/.mwraw
+	fi
+	if [ -s /tmp/.mwraw ]; then
+		raw=$(cat /tmp/.mwraw)
+	fi
+	if [ -z "$raw" ]; then
+		err=$(head -c 180 /tmp/.mwerr 2>/dev/null)
+		rm -f /tmp/.mwraw /tmp/.mwerr
+		case "$err" in
+			*timed\ out*|*Timeout*|*Couldn't\ connect*|*Failed\ to\ connect*)
+				die "路由器连不上订阅服务器，超时内没有收到任何数据。这个地址从路由器访问不到。"
+				;;
+		esac
+		die "订阅下载失败 HTTP ${http} ${err}"
+	fi
+
+	body="$raw"
+	# Clash 订阅交给 PassWall 的转换器，变成分享链接再导入
+	if printf '%s\n' "$body" | grep -q 'proxies:'; then
+		if lua -e 'require "lyaml"' >/dev/null 2>&1; then
+			lua -e '
+				pcall(require, "luci.passwall.api")
+				dofile("/usr/share/passwall/clash_subconverter.lua")
+				local f = io.open("/tmp/.mwraw", "r")
+				local raw = f:read("*a"); f:close()
+				io.write(parseClashNode(raw, "mw") or "")
+			' > /tmp/.mwclash 2>>/tmp/.mwerr
+			if [ -s /tmp/.mwclash ]; then
+				body=$(cat /tmp/.mwclash)
+			fi
+		fi
+	fi
+	if ! printf '%s\n' "$body" | grep -qE '^(vmess|vless|trojan|ss|ssr|hysteria2|hy2|tuic|socks5?)://'; then
+		printf '%s' "$raw" > /tmp/.mwsub.b64
+		dec=$("$SHARE/b64.uc" /tmp/.mwsub.b64 2>/dev/null)
+		rm -f /tmp/.mwsub.b64
+		if [ -n "$dec" ] && printf '%s\n' "$dec" | grep -qE '(vmess|vless|trojan|ss|hysteria2|hy2|tuic|socks5?)://'; then
+			body="$dec"
+		fi
+	fi
+
+	cnt=0
+	printf '%s\n' "$body" | tr -d '\r' > /tmp/.mwsub
+	while IFS= read -r line; do
+		case "$line" in
+			vmess://*|vless://*|trojan://*|ss://*|hysteria2://*|hy2://*|tuic://*|socks://*|socks5://*)
+				out=$(parse_one "$line") || continue
+				t=$(echo "$out" | cut -d'|' -f1)
+				json=$(echo "$out" | cut -d'|' -f2-)
+				remark=$(echo "$line" | sed -n 's/.*#\(.*\)$/\1/p')
+				[ -z "$remark" ] || remark=$("$SHARE/urldec.uc" "$remark")
+				[ -n "$remark" ] || remark="${t}"
+				nid=$(add_node "$t" "$json" "$(clean_remark "$remark")")
+				cnt=$((cnt + 1))
+				echo "  + node=$nid $t $(clean_remark "$remark")"
+			;;
+		esac
+	done < /tmp/.mwsub
+	rm -f /tmp/.mwsub /tmp/.mwraw /tmp/.mwclash /tmp/.mwerr
+	if [ "$cnt" -eq 0 ]; then
+		if printf '%s' "$raw" | grep -qi '<html'; then
+			die "下载到的是网页，不是节点订阅。请检查订阅地址。HTTP ${http}"
+		fi
+		if printf '%s\n' "$raw" | grep -q 'proxies:'; then
+			die "这是 Clash 订阅，但没有转换成节点。HTTP ${http}"
+		fi
+		hint=$(printf '%s' "$raw" | tr -cd '\11\12\15\40-\176' | head -c 60)
+		die "没有识别到节点。HTTP ${http} 内容开头: ${hint}"
+	fi
+	echo "imported=$cnt"
+}
+
+# ---------- bind ----------
+cmd_bind() {
+	local sec="$1" id="$2" idx
+	[ -n "$sec" ] && [ -n "$id" ] || die "用法: mwnode bind <sec> <node-id>"
+	uci -q get "multiwifi.${PREFIX_NODE}${id}" >/dev/null 2>&1 || die "节点 $id 不存在"
+	idx="${sec#mw_}"
+	ensure_cfg
+	uci -q set "multiwifi.${PREFIX_BIND}${sec}=bind"
+	uci -q set "multiwifi.${PREFIX_BIND}${sec}.node=${id}"
+	uci -q set "multiwifi.${PREFIX_BIND}${sec}.iface=mw${idx}"
+	uci -q commit multiwifi
+	cmd_apply >/dev/null 2>&1 || true
+	echo "bound=${sec}->node${id}"
+}
+
+cmd_unbind() {
+	local sec="$1"
+	[ -n "$sec" ] || die "用法: mwnode unbind <sec>"
+	uci -q delete "multiwifi.${PREFIX_BIND}${sec}"
+	uci -q commit multiwifi
+	cmd_apply >/dev/null 2>&1 || true
+	echo "unbound=$sec"
+}
+
+# ---------- apply ----------
+cmd_apply() {
+	local tmp=/tmp/.mwbinds s id iface octet json
+	: > "$tmp"
+	for s in $(uci show multiwifi 2>/dev/null | sed -n "s/^multiwifi\.${PREFIX_BIND}\(.*\)=bind$/\1/p"); do
+		id=$(uci -q get "multiwifi.${PREFIX_BIND}${s}.node")
+		iface=$(uci -q get "multiwifi.${PREFIX_BIND}${s}.iface")
+		[ -n "$id" ] && [ -n "$iface" ] || continue
+		json=$(uci -q get "multiwifi.${PREFIX_NODE}${id}.json")
+		[ -n "$json" ] || continue
+		octet=$(uci -q get "network.${iface}.ipaddr" | awk -F. '{print $3}')
+		[ -n "$octet" ] || continue
+		printf '%s|%s|%s|%s\n' "$iface" "$octet" "$id" "$json" >> "$tmp"
+	done
+
+	if [ ! -s "$tmp" ]; then
+		log "  无绑定，停止 sing-box 分流"
+		/etc/init.d/mw-singbox stop >/dev/null 2>&1 || true
+		"$SHARE/tproxy.sh" clear >/dev/null 2>&1 || true
+		rm -f "$tmp"
+		echo "applied=0"
+		return 0
+	fi
+
+	"$SHARE/gen.uc" "$tmp" "$TPROXY_PORT" > "$SB_TMP" || { log "生成配置失败"; rm -f "$tmp"; return 1; }
+	mkdir -p /etc/sing-box
+	cp "$SB_TMP" "$SB_CFG"
+	mv "$tmp" /tmp/sing-box-mw.binds 2>/dev/null || rm -f "$tmp"
+
+	cat > /etc/sysctl.d/99-mw-singbox.conf <<'EOF'
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.route_localnet=1
+EOF
+	sysctl -p /etc/sysctl.d/99-mw-singbox.conf >/dev/null 2>&1 || true
+
+	"$SHARE/tproxy.sh" apply "$TPROXY_PORT" >/dev/null 2>&1 || true
+	/etc/init.d/mw-singbox restart >/dev/null 2>&1 || true
+	echo "applied=$(wc -l < /tmp/sing-box-mw.binds 2>/dev/null || echo 0)"
+}
+
+# ---------- 查询 ----------
+cmd_list_nodes() {
+	local s typ remark addr
+	for s in $(uci show multiwifi 2>/dev/null | sed -n "s/^multiwifi\.${PREFIX_NODE}\([0-9]\+\)=node$/\1/p"); do
+		typ=$(uci -q get "multiwifi.${PREFIX_NODE}${s}.type")
+		remark=$(uci -q get "multiwifi.${PREFIX_NODE}${s}.remark")
+		uci -q get "multiwifi.${PREFIX_NODE}${s}.json" > /tmp/.mwjson 2>/dev/null || :
+		addr=$("$SHARE/addr.uc" /tmp/.mwjson 2>/dev/null)
+		[ -n "$addr" ] || addr='-|'
+		echo "${s}|${typ}|${remark}|${addr}"
+	done
+	rm -f /tmp/.mwjson
+}
+
+cmd_clear_nodes() {
+	local s
+	for s in $(uci show multiwifi 2>/dev/null | sed -n "s/^multiwifi\.\([^=]*\)=node$/\1/p; s/^multiwifi\.\([^=]*\)=bind$/\1/p"); do
+		uci -q delete "multiwifi.${s}"
+	done
+	uci -q commit multiwifi
+	cmd_apply >/dev/null 2>&1 || true
+	echo "cleared=1"
+}
+
+cmd_list_binds() {
+	local s id
+	for s in $(uci show multiwifi 2>/dev/null | sed -n "s/^multiwifi\.${PREFIX_BIND}\(.*\)=bind$/\1/p"); do
+		id=$(uci -q get "multiwifi.${PREFIX_BIND}${s}.node")
+		echo "${s}|${id}|$(uci -q get "multiwifi.${PREFIX_NODE}${id}.type")|$(uci -q get "multiwifi.${PREFIX_NODE}${id}.remark")|$(uci -q get "multiwifi.${PREFIX_BIND}${s}.iface")"
+	done
+}
+
+cmd_get() {
+	local sec="$1" id
+	[ -n "$sec" ] || die "用法: mwnode get <sec>"
+	id=$(uci -q get "multiwifi.${PREFIX_BIND}${sec}.node")
+	[ -n "$id" ] || { echo '{"bound":false}'; return 0; }
+	echo "{\"bound\":true,\"node\":\"$id\",\"type\":\"$(uci -q get "multiwifi.${PREFIX_NODE}${id}.type")\",\"remark\":\"$(uci -q get "multiwifi.${PREFIX_NODE}${id}.remark")\"}"
+}
+
+cmd_del_node() {
+	local id="$1" s
+	[ -n "$id" ] || die "用法: mwnode del-node <node-id>"
+	for s in $(uci show multiwifi 2>/dev/null | sed -n "s/^multiwifi\.${PREFIX_BIND}\(.*\)=bind$/\1/p"); do
+		[ "$(uci -q get "multiwifi.${PREFIX_BIND}${s}.node")" = "$id" ] && uci -q delete "multiwifi.${PREFIX_BIND}${s}"
+	done
+	uci -q delete "multiwifi.${PREFIX_NODE}${id}"
+	uci -q commit multiwifi
+	cmd_apply >/dev/null 2>&1 || true
+	echo "deleted=$id"
+}
+
+cmd_status() {
+	if pgrep sing-box >/dev/null 2>&1; then echo "running=1"; else echo "running=0"; fi
+	cmd_list_binds
+}
+
+cmd="${1:-}"; shift 2>/dev/null || true
+case "$cmd" in
+	import-link) cmd_import_link "$@" ;;
+	add-link)    cmd_add_link "$@" ;;
+	import-sub)  cmd_import_sub "$@" ;;
+	clear-nodes) cmd_clear_nodes "$@" ;;
+	bind)        cmd_bind "$@" ;;
+	unbind)      cmd_unbind "$@" ;;
+	apply)       cmd_apply "$@" ;;
+	list-nodes)  cmd_list_nodes "$@" ;;
+	list-binds)  cmd_list_binds "$@" ;;
+	get)         cmd_get "$@" ;;
+	del-node)    cmd_del_node "$@" ;;
+	status)      cmd_status "$@" ;;
+	*) die "用法: mwnode {import-link|import-sub|bind|unbind|apply|list-nodes|list-binds|get|del-node|status} ..." ;;
+esac

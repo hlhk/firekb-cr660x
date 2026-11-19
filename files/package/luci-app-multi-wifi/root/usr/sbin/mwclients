@@ -1,0 +1,84 @@
+#!/bin/sh
+#
+# mwclients - 输出各无线接口的连接客户端（JSON）
+#
+# 用法:
+#   mwclients              # 全部接口
+#   mwclients phy0-ap1     # 指定接口
+#   mwclients -p           # 同上，供 LuCI 调用（参数忽略）
+#
+# 输出: {"phy0-ap1":{"ssid":"x","count":2,"clients":[{"mac":..,"signal":..,"rx":..,"tx":..}]}}
+#
+
+want=""
+case "${1:-}" in
+    -p|--plain) ;;
+    '') ;;
+    *) want="$1" ;;
+esac
+
+# 列出所有 AP 接口
+ifaces=""
+for d in /sys/class/net/*; do
+    n=$(basename "$d")
+    case "$n" in
+        phy*-ap*|wlan*-st*) ;;
+        *) continue ;;
+    esac
+    # 只要 AP 模式（master）的
+    op=$(iw dev "$n" info 2>/dev/null | awk '/type/{print $2}')
+    [ "$op" = "AP" ] || continue
+    if [ -n "$want" ] && [ "$n" != "$want" ]; then continue; fi
+    ifaces="$ifaces $n"
+done
+
+jstr() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+printf '{'
+first=1
+for n in $ifaces; do
+    ssid=$(iw dev "$n" info 2>/dev/null | sed -n 's/^[[:space:]]*ssid \([^[:space:]].*\)$/\1/p')
+    [ -z "$ssid" ] && ssid=$(iwinfo "$n" info 2>/dev/null | sed -n 's/^[[:space:]]*ESSID: "\(.*\)"$/\1/p')
+
+    # 从 iwinfo assoclist 解析
+    list=""
+    cnt=0
+    tmp=$(mktemp)
+    iwinfo "$n" assoclist 2>/dev/null > "$tmp"
+
+    # 解析格式:
+    #   AA:BB:CC:DD:EE:FF  -45 dBm / -95 dBm (SNR 50)  1200 ms ago
+    #     RX: 1.2 MBit/s, 1000 Pkts.   TX: 5.4 MBit/s, 200 Pkts.
+    cur_mac=''; cur_sig=''; cur_rx=''; cur_tx=''
+    flush_client() {
+        [ -z "$cur_mac" ] && return
+        [ -n "$list" ] && list="$list,"
+        list="$list{\"mac\":\"$cur_mac\",\"signal\":\"${cur_sig}\",\"rx\":\"${cur_rx}\",\"tx\":\"${cur_tx}\"}"
+        cnt=$((cnt + 1))
+    }
+
+    while IFS= read -r line; do
+        case "$line" in
+            [0-9A-Fa-f][0-9A-Fa-f]:*)
+                flush_client
+                cur_mac=$(echo "$line" | awk '{print $1}')
+                cur_sig=$(echo "$line" | awk '{print $2 $3}')
+                cur_rx=''; cur_tx=''
+                ;;
+            *RX:*)
+                cur_rx=$(echo "$line" | sed -n 's/.*RX:[[:space:]]*\([^,]*\).*/\1/p')
+                cur_tx=$(echo "$line" | sed -n 's/.*TX:[[:space:]]*\([^,]*\).*/\1/p')
+                ;;
+        esac
+    done < "$tmp"
+    flush_client
+    rm -f "$tmp"
+
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '"%s":{"ssid":"%s","count":%d,"clients":[%s]}' \
+        "$(jstr "$n")" "$(jstr "$ssid")" "$cnt" "$list"
+done
+printf '}\n'
