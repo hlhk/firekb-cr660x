@@ -20,7 +20,7 @@ on:
       - 'diy.sh'
       - '.github/workflows/build.yml'
       - 'files/**'
-      - 'config.seed'
+      - 'config.packages'
 
 jobs:
   build:
@@ -101,29 +101,18 @@ jobs:
           cp $GITHUB_WORKSPACE/files/uci-defaults/99-firekb-custom \
              package/base-files/files/etc/uci-defaults/99-firekb-custom
           chmod +x package/base-files/files/etc/uci-defaults/99-firekb-custom
+          # 确保脚本是 LF 换行且可执行
+          file package/base-files/files/etc/uci-defaults/99-firekb-custom
           echo "=== 已注入 ==="
           ls package/luci-app-multi-wifi
-          ls package/base-files/files/etc/uci-defaults/
+          ls -la package/base-files/files/etc/uci-defaults/
 
-      - name: 应用 DIY 脚本
+      - name: 组装配置并校验
         run: |
           cd openwrt
           cp $GITHUB_WORKSPACE/diy.sh .
           chmod +x diy.sh
           bash diy.sh
-
-      - name: 加载种子配置
-        run: |
-          cd openwrt
-          if [ -f "$GITHUB_WORKSPACE/config.seed" ]; then
-            cp "$GITHUB_WORKSPACE/config.seed" .config
-          fi
-          make defconfig
-          echo "=== target ==="
-          grep -E 'CONFIG_TARGET_(BOARD|SUBTARGET)=' .config
-          grep -E 'CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660' .config
-          echo "=== 包数 ==="
-          grep -c '^CONFIG_PACKAGE.*=y' .config
 
       - name: 下载依赖
         run: |
