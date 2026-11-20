@@ -3,6 +3,14 @@ name: Build Firekb CR660X
 on:
   workflow_dispatch:
     inputs:
+      flavor:
+        description: '构建类型'
+        required: true
+        default: 'minimal'
+        type: choice
+        options:
+          - minimal
+          - full
       profile:
         description: '设备型号'
         required: true
@@ -112,7 +120,7 @@ jobs:
           cd openwrt
           cp $GITHUB_WORKSPACE/diy.sh .
           chmod +x diy.sh
-          bash diy.sh
+          bash diy.sh "${{ github.event.inputs.flavor || 'minimal' }}"
 
       - name: 下载依赖
         run: |
@@ -126,13 +134,56 @@ jobs:
           echo "CPU: $(nproc)"
           make -j$(nproc) || make -j1 V=s
 
+      - name: 校验产物（体积硬限制）
+        run: |
+          cd openwrt/bin/targets/ramips/mt7621 || exit 1
+          echo "=== 产物清单 ==="
+          ls -lh *.bin *.ubi 2>/dev/null || ls -lh *.bin
+
+          echo ""
+          echo "=== 体积校验 ==="
+          fail=0
+
+          # 内核分区只有 4MB，kernel 镜像必须远小于此
+          for f in *initramfs-kernel.bin; do
+            [ -f "$f" ] || continue
+            sz=$(stat -c%s "$f")
+            mb=$((sz / 1048576))
+            echo "  $f = ${mb} MB"
+            if [ "$sz" -gt 20971520 ]; then
+              echo "  ERROR: initramfs 超过 20MB，uboot TFTP 会加载失败"
+              fail=1
+            fi
+          done
+
+          # squashfs sysupgrade 必须小于 ubi 分区（121.5MB）
+          for f in *squashfs-sysupgrade.bin; do
+            [ -f "$f" ] || continue
+            sz=$(stat -c%s "$f")
+            mb=$((sz / 1048576))
+            echo "  $f = ${mb} MB"
+            if [ "$sz" -gt 115343360 ]; then
+              echo "  ERROR: sysupgrade 超过 110MB，塞不进 ubi 分区"
+              fail=1
+            fi
+          done
+
+          if [ "$fail" = "1" ]; then
+            echo ""
+            echo "产物校验失败，中止上传"
+            exit 1
+          fi
+          echo ""
+          echo "产物校验通过"
+
       - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: Firekb-CR660X-${{ github.run_number }}
+          name: Firekb-CR660X-${{ github.event.inputs.flavor || 'minimal' }}-${{ github.run_number }}
           path: |
             openwrt/bin/targets/ramips/mt7621/*.bin
             openwrt/bin/targets/ramips/mt7621/*.buildinfo
+            openwrt/bin/targets/ramips/mt7621/*.manifest
             openwrt/bin/targets/ramips/mt7621/sha256sums
           if-no-files-found: error
           retention-days: 90
