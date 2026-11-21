@@ -120,7 +120,13 @@ jobs:
           cd openwrt
           cp $GITHUB_WORKSPACE/diy.sh .
           chmod +x diy.sh
-          bash diy.sh "${{ github.event.inputs.flavor || 'minimal' }}"
+          # push 触发时 github.event.inputs.flavor 为空。
+          # 默认必须是 full —— 只有 full 才会读取 config.packages，
+          # 用 minimal 会编出 11MB 的空壳固件（不含任何插件）。
+          FLAVOR="${{ github.event.inputs.flavor }}"
+          if [ -z "$FLAVOR" ]; then FLAVOR="full"; fi
+          echo "构建类型: $FLAVOR"
+          bash diy.sh "$FLAVOR"
 
       - name: 下载依赖
         run: |
@@ -209,7 +215,7 @@ jobs:
       - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: Firekb-CR660X-${{ github.event.inputs.flavor || 'minimal' }}-${{ github.run_number }}
+          name: Firekb-CR660X-${{ github.event.inputs.flavor || 'full' }}-${{ github.run_number }}
           path: |
             openwrt/bin/targets/ramips/mt7621/*.bin
             openwrt/bin/targets/ramips/mt7621/*.buildinfo
