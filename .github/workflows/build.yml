@@ -144,7 +144,18 @@ jobs:
           echo "=== 体积校验 ==="
           fail=0
 
-          # 内核分区只有 4MB，kernel 镜像必须远小于此
+          # ---- PandoraBox U-Boot Recovery 分区布局 ----
+          #   Kernel : 0x080000 ~ 0x0480000  (4.00 MB)
+          #   RootFS : 0x0480000 ~ 0x03F80000 (59.00 MB / 472 PEB x 128KB)
+          #   factory 镜像从 flash 0x080000 开始写入，文件偏移 0 == flash 0x080000
+          #   => 文件最大 = 0x03F80000 - 0x080000 = 0x03F00000 = 66060288 (63.00 MB)
+          FACTORY_LIMIT=66060288
+          # 留 1.5MB 余量给坏块，超过就告警
+          FACTORY_WARN=64500000
+          # squashfs 起点固定为 4.25MB（uImage 补齐到 4MB + UBI 头）
+          SQ_BASE=4456448
+
+          # 内核分区只有 4MB，initramfs 必须远小于此
           for f in *initramfs-kernel.bin; do
             [ -f "$f" ] || continue
             sz=$(stat -c%s "$f")
@@ -156,7 +167,26 @@ jobs:
             fi
           done
 
-          # squashfs sysupgrade 必须小于 ubi 分区（121.5MB）
+          # ★ factory 镜像：这个才是 PandoraBox 上传/刷写用的文件
+          #   之前没有校验，导致 68.75MB 的固件被传上去又被 Uboot 拒绝
+          for f in *squashfs-firmware.bin; do
+            [ -f "$f" ] || continue
+            sz=$(stat -c%s "$f")
+            mb=$(awk "BEGIN{printf \"%.2f\", $sz/1048576}")
+            sqmb=$(awk "BEGIN{printf \"%.2f\", ($sz-$SQ_BASE)/1048576}")
+            peb=$(( (sz + 131071) / 131072 ))
+            echo "  $f = ${mb} MB  (squashfs ${sqmb} MB, ${peb} PEB / 上限 472)"
+            if [ "$sz" -gt "$FACTORY_LIMIT" ]; then
+              over=$(( (sz - FACTORY_LIMIT + 1048575) / 1048576 ))
+              echo "  ERROR: factory 镜像超出 PandoraBox 分区 ${over} MB"
+              echo "         U-Boot 会直接拒绝刷写，必须瘦身"
+              fail=1
+            elif [ "$sz" -gt "$FACTORY_WARN" ]; then
+              echo "  WARNING: factory 镜像已接近分区上限，坏块多时会刷写失败"
+            fi
+          done
+
+          # sysupgrade 走 UBI 卷，限制放宽
           for f in *squashfs-sysupgrade.bin; do
             [ -f "$f" ] || continue
             sz=$(stat -c%s "$f")
