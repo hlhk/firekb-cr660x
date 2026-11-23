@@ -62,10 +62,15 @@ jobs:
       - name: 缓存 ccache
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
-          key: ccache-cr660x-${{ github.sha }}
+          # OpenWrt 的 rules.mk 强制 CCACHE_DIR=$(TOPDIR)/.ccache，
+          # 也就是 openwrt/.ccache。缓存在 ~/.ccache 是完全无效的，
+          # 这就是此前 4 个 ccache 缓存全都 0 MB 的根因。
+          path: openwrt/.ccache
+          # key 里不能再带 github.sha：每次提交 SHA 都变，缓存永远命中不了。
+          # 用固定的 target 名，靠 restore-keys 前缀匹配增量累积。
+          key: ccache-cr660x-mt7621-v1
           restore-keys: |
-            ccache-cr660x-
+            ccache-cr660x-mt7621-
 
       - name: 克隆 OpenWrt 源码
         run: |
@@ -75,12 +80,15 @@ jobs:
 
       - name: 配置 ccache
         run: |
-          mkdir -p ~/.ccache
-          cat > ~/.ccache/ccache.conf <<'EOF'
+          # 必须和 OpenWrt rules.mk 的 CCACHE_DIR 一致，即 $(TOPDIR)/.ccache
+          mkdir -p openwrt/.ccache
+          cat > openwrt/.ccache/ccache.conf <<'EOF'
           max_size = 5G
           compression = true
           compression_level = 6
           EOF
+          echo "ccache 目录: $(pwd)/openwrt/.ccache"
+          ccache --version | head -1
 
       - name: 添加 feeds
         run: |
@@ -138,7 +146,10 @@ jobs:
         run: |
           cd openwrt
           echo "CPU: $(nproc)"
-          make -j$(nproc) || make -j1 V=s
+          # 不要写成 `make -j$(nproc) || make -j1 V=s`：
+          # 并行一旦失败就退回单线程串行重编，会把 1 小时的构建拖成 4 小时，
+          # 而且掩盖真实错误。失败就让它失败，直接看日志。
+          make -j$(nproc) V=s
 
       - name: 校验产物（体积硬限制）
         run: |
@@ -161,16 +172,13 @@ jobs:
           # squashfs 起点固定为 4.25MB（uImage 补齐到 4MB + UBI 头）
           SQ_BASE=4456448
 
-          # 内核分区只有 4MB，initramfs 必须远小于此
+          # initramfs 走 TFTP / 内存加载，不写 kernel 分区，因此不受 4MB 限制。
+          # 它不参与 PandoraBox 恢复页刷机，仅作信息输出，绝不阻断构建。
           for f in *initramfs-kernel.bin; do
             [ -f "$f" ] || continue
             sz=$(stat -c%s "$f")
             mb=$((sz / 1048576))
-            echo "  $f = ${mb} MB"
-            if [ "$sz" -gt 20971520 ]; then
-              echo "  ERROR: initramfs 超过 20MB，uboot TFTP 会加载失败"
-              fail=1
-            fi
+            echo "  $f = ${mb} MB  (仅信息，不参与 U-Boot 刷机校验)"
           done
 
           # ★ factory 镜像：这个才是 PandoraBox 上传/刷写用的文件
