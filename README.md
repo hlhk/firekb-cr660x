@@ -1,4 +1,4 @@
-# Firekb CR660X 固件（GitHub Actions 云端编译）
+﻿# Firekb CR660X 固件（GitHub Actions 云端编译）
 
 小米 CR6606 / CR6608 / CR6609（MT7621 + MT7915E）的 Firekb 固件。
 
@@ -13,7 +13,7 @@
 | 内存 | 256 MB |
 | 闪存 | 128 MB NAND (Samsung) |
 | 分区 | `kernel` 4MB @0x200000，`ubi` 121.5MB @0x600000 |
-| 管理地址 | `192.168.9.1`（刷完） |
+| 管理地址 | `192.168.8.1`（刷完） |
 | WiFi | `Firekb_2.4G` / `Firekb_5G`，密码 `12345678` |
 | root 密码 | 无（首次登录直接进） |
 
@@ -68,14 +68,14 @@ openwrt-ramips-mt7621-xiaomi_mi-router-cr6609-squashfs-sysupgrade.bin
 
 ### SSH 方式
 ```sh
-scp openwrt-ramips-mt7621-...-sysupgrade.bin root@192.168.9.1:/tmp/
-ssh root@192.168.9.1
+scp openwrt-ramips-mt7621-...-sysupgrade.bin root@192.168.8.1:/tmp/
+ssh root@192.168.8.1
 sysupgrade -n /tmp/openwrt-ramips-mt7621-...-sysupgrade.bin
 ```
 
 `-n` 表示不保留原配置（推荐，避免 Kwrt 的残留配置冲突）。
 
-刷完路由器地址变为 **192.168.9.1**。
+刷完路由器地址变为 **192.168.8.1**。
 
 ## 目录结构
 

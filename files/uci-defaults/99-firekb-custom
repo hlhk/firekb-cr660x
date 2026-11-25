@@ -27,9 +27,9 @@ EOT
 
 # ============ 网络：只改 IP，不动结构 ============
 # 官方 02_network 已经生成 lan(br-lan: lan1 lan2 lan3) + wan(wan)。
-# 这里只把 LAN 网段从默认 192.168.1.1 改成 192.168.9.1。
+# 这里只把 LAN 网段从默认 192.168.1.1 改成 192.168.8.1。
 uci -q batch <<-EOT
-	set network.lan.ipaddr='192.168.9.1'
+	set network.lan.ipaddr='192.168.8.1'
 	set network.lan.netmask='255.255.255.0'
 	set network.lan.ip6assign='60'
 	commit network

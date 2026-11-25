@@ -132,6 +132,16 @@ jobs:
           # 自研包
           mkdir -p package/luci-app-multi-wifi
           cp -r $GITHUB_WORKSPACE/files/package/luci-app-multi-wifi/. package/luci-app-multi-wifi/
+          # 关键：Windows 上 git 不保存可执行位，若不显式 chmod，
+          # 打包进固件后 mwcheck / mwctl 会是 -rw-r--r--，
+          # 运行时报 "Permission denied"，多 WiFi 插件直接不可用。
+          chmod +x package/luci-app-multi-wifi/root/usr/sbin/* \
+                   package/luci-app-multi-wifi/root/etc/init.d/* \
+                   package/luci-app-multi-wifi/root/etc/hotplug.d/iface/* \
+                   package/luci-app-multi-wifi/root/usr/share/mw-singbox/tproxy.sh 2>/dev/null || true
+          echo "=== sbin/init.d 权限自检 ==="
+          ls -l package/luci-app-multi-wifi/root/usr/sbin/ \
+                package/luci-app-multi-wifi/root/etc/init.d/
           # 品牌 uci-defaults（整目录：品牌配置 + ACL 自愈补丁）
           mkdir -p package/base-files/files/etc/uci-defaults
           cp $GITHUB_WORKSPACE/files/uci-defaults/* \
