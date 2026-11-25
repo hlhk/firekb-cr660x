@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Firekb CR660X 出厂默认配置（首次启动执行一次）
 #
 # 重要：网络配置一律交给官方 /etc/board.d/02_network + /etc/init.d/network 处理。
@@ -35,40 +35,103 @@ uci -q batch <<-EOT
 	commit network
 EOT
 
-# 确保 wireless 配置存在（官方 wireless 默认可能没有 radio 段）
-# 由 /etc/init.d/network + wifi config 生成，这里只做属性覆盖
+# ============ 无线 ============
+# 注意：MT7915 的驱动 probe 要读 /lib/firmware/mediatek/*.bin，
+# 若 kmod-mt7915-firmware 未安装则 phy 永远不会出现、wireless 配置也就生成不出来。
+# 这里先等 phy 就绪，再生成/兜底写配置，并**显式清掉 OpenWrt 默认的 disabled '1'**。
+
+# 等无线 phy 出现（最多 20 秒）
+i=0
+while [ $i -lt 20 ]; do
+	[ -n "$(ls /sys/class/ieee80211 2>/dev/null)" ] && break
+	i=$((i + 1))
+	sleep 1
+done
+
+# 若还没有 radio 段，让 wifi-scripts 按 board.json 自动生成
+if ! uci -q get wireless.radio0 >/dev/null 2>&1; then
+	wifi config >/dev/null 2>&1 || true
+fi
+
+# 兜底：仍没有则按 CR660X 的 PCI 路径直接写（2.4G 与 5G 同卡两个 phy）
+if ! uci -q get wireless.radio0 >/dev/null 2>&1; then
+	cat > /etc/config/wireless <<-'EOF'
+	config wifi-device 'radio0'
+		option type 'mac80211'
+		option path '1e140000.pcie/pci0000:00/0000:00:01.0/0000:02:00.0'
+		option band '2g'
+		option channel '1'
+		option htmode 'HE20'
+		option disabled '0'
+		option country 'CN'
+
+	config wifi-iface 'default_radio0'
+		option device 'radio0'
+		option network 'lan'
+		option mode 'ap'
+		option ssid 'Firekb_2.4G'
+		option encryption 'psk2'
+		option key '12345678'
+		option disabled '0'
+
+	config wifi-device 'radio1'
+		option type 'mac80211'
+		option path '1e140000.pcie/pci0000:00/0000:00:01.0/0000:02:00.0+1'
+		option band '5g'
+		option channel '36'
+		option htmode 'HE80'
+		option disabled '0'
+		option country 'CN'
+
+	config wifi-iface 'default_radio1'
+		option device 'radio1'
+		option network 'lan'
+		option mode 'ap'
+		option ssid 'Firekb_5G'
+		option encryption 'psk2'
+		option key '12345678'
+		option disabled '0'
+	EOF
+fi
+
+# 属性覆盖（radio 与 iface 两层都要 disabled='0'，两层任一为 1 都不会起）
 for r in radio0 radio1; do
 	uci -q get wireless.$r >/dev/null 2>&1 || continue
 	uci -q set wireless.$r.disabled='0'
 	uci -q set wireless.$r.country='CN'
-	uci -q commit wireless
 done
 
-# 2.4G
-if uci -q get wireless.default_radio0 >/dev/null 2>&1; then
-	uci -q batch <<-EOT
-		set wireless.default_radio0.network='lan'
-		set wireless.default_radio0.ssid='Firekb_2.4G'
-		set wireless.default_radio0.encryption='psk2'
-		set wireless.default_radio0.key='12345678'
-		set wireless.radio0.channel='1'
-		set wireless.radio0.htmode='HE20'
-		commit wireless
-	EOT
-fi
+uci -q get wireless.radio0 >/dev/null 2>&1 && {
+	uci -q set wireless.radio0.channel='1'
+	uci -q set wireless.radio0.htmode='HE20'
+}
 
-# 5G
-if uci -q get wireless.default_radio1 >/dev/null 2>&1; then
-	uci -q batch <<-EOT
-		set wireless.default_radio1.network='lan'
-		set wireless.default_radio1.ssid='Firekb_5G'
-		set wireless.default_radio1.encryption='psk2'
-		set wireless.default_radio1.key='12345678'
-		set wireless.radio1.channel='36'
-		set wireless.radio1.htmode='HE80'
-		commit wireless
-	EOT
-fi
+uci -q get wireless.radio1 >/dev/null 2>&1 && {
+	uci -q set wireless.radio1.channel='36'
+	uci -q set wireless.radio1.htmode='HE80'
+}
+
+uci -q get wireless.default_radio0 >/dev/null 2>&1 && uci -q batch <<-EOT
+	set wireless.default_radio0.device='radio0'
+	set wireless.default_radio0.network='lan'
+	set wireless.default_radio0.mode='ap'
+	set wireless.default_radio0.ssid='Firekb_2.4G'
+	set wireless.default_radio0.encryption='psk2'
+	set wireless.default_radio0.key='12345678'
+	set wireless.default_radio0.disabled='0'
+EOT
+
+uci -q get wireless.default_radio1 >/dev/null 2>&1 && uci -q batch <<-EOT
+	set wireless.default_radio1.device='radio1'
+	set wireless.default_radio1.network='lan'
+	set wireless.default_radio1.mode='ap'
+	set wireless.default_radio1.ssid='Firekb_5G'
+	set wireless.default_radio1.encryption='psk2'
+	set wireless.default_radio1.key='12345678'
+	set wireless.default_radio1.disabled='0'
+EOT
+
+uci -q commit wireless
 
 # ============ NTP ============
 uci -q batch <<-EOT

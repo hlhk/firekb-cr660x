@@ -16,14 +16,11 @@ echo " Firekb CR660X 配置组装 [flavor=$FLAVOR]"
 echo "=========================================="
 
 # ---------- 1. target ----------
-echo ">>> 1/4 写入 target（ramips/mt7621，三型号）"
+echo ">>> 1/4 写入 target（ramips/mt7621，单一型号：cr6606）"
 cat > .config <<'EOF'
 CONFIG_TARGET_ramips=y
 CONFIG_TARGET_ramips_mt7621=y
-CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6606=y
-CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6608=y
-CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6609=y
 CONFIG_TARGET_ROOTFS_SQUASHFS=y
 CONFIG_TARGET_ROOTFS_UBI=y
 # initramfs 保留（uboot TFTP 恢复要用）
@@ -94,8 +91,8 @@ echo " 校验"
 echo "=========================================="
 echo "--- target ---"
 grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES)=' .config || true
-echo "--- 三型号 ---"
-grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[689]=y' .config
+echo "--- 目标机型 ---"
+grep -E '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[689]=y' .config
 echo "--- 版本 ---"
 grep -E '^CONFIG_VERSION_(DIST|NUMBER|CODE)=' .config || true
 echo "--- 编译优化（应为空，用默认） ---"
@@ -116,9 +113,16 @@ if ! grep -q '^CONFIG_TARGET_SUBTARGET="mt7621"' .config; then
   fail=1
 fi
 
-n=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[689]=y' .config)
-if [ "$n" != "3" ]; then
-  echo "ERROR: 三型号未全部选中（当前 $n）"
+n=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6606=y' .config)
+if [ "$n" != "1" ]; then
+  echo "ERROR: cr6606 未选中（当前 $n）"
+  fail=1
+fi
+
+# 只允许一个机型，避免多编出用不上的固件
+extra=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[89]=y' .config)
+if [ "$extra" != "0" ]; then
+  echo "ERROR: 存在多余机型（cr6608/cr6609 共 $extra 个），应只编 cr6606"
   fail=1
 fi
 

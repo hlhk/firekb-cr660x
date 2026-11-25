@@ -5,9 +5,6 @@
 		"action": {
 			"type": "view",
 			"path": "multi-wifi/main"
-		},
-		"depends": {
-			"acl": [ "luci-app-multi-wifi" ]
 		}
 	}
 }

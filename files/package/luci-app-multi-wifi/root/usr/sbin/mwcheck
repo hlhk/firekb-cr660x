@@ -291,8 +291,9 @@ if [ -n "$PKGMGR" ]; then
         LINE="luci-app-multi-wifi (通过文件检测)"
     fi
     if [ -n "$LINE" ]; then
-        warn "已安装: $LINE"
-        detail "如需重装请先卸载"
+        # 本插件通常已随固件预装。已安装属于正常状态，不应算作警告，
+        # 否则整页永远显示 "可以安装，但有 1 项警告" 的黄色提示。
+        ok "已安装: $LINE"
     else
         ok "未安装，可以全新安装"
     fi

@@ -112,16 +112,54 @@ jobs:
           # 自研包
           mkdir -p package/luci-app-multi-wifi
           cp -r $GITHUB_WORKSPACE/files/package/luci-app-multi-wifi/. package/luci-app-multi-wifi/
-          # 品牌 uci-defaults
+          # 品牌 uci-defaults（整目录：品牌配置 + ACL 自愈补丁）
           mkdir -p package/base-files/files/etc/uci-defaults
-          cp $GITHUB_WORKSPACE/files/uci-defaults/99-firekb-custom \
-             package/base-files/files/etc/uci-defaults/99-firekb-custom
-          chmod +x package/base-files/files/etc/uci-defaults/99-firekb-custom
+          cp $GITHUB_WORKSPACE/files/uci-defaults/* \
+             package/base-files/files/etc/uci-defaults/
+          chmod +x package/base-files/files/etc/uci-defaults/*
           # 确保脚本是 LF 换行且可执行
-          file package/base-files/files/etc/uci-defaults/99-firekb-custom
+          file package/base-files/files/etc/uci-defaults/*
+
+          # ---------- 主题 logo 覆盖 ----------
+          # Vantage 的页面品牌图标是 header.ut 里的内联 SVG，不是 logo.svg
+          # （logo.svg 只做浏览器 favicon）。两者都要替换。
+          THEME=""
+          for cand in \
+            package/feeds/theme_vantage/luci-theme-vantage \
+            feeds/theme_vantage/luci-theme-vantage \
+            package/luci-theme-vantage; do
+            if [ -d "$cand" ]; then THEME="$cand"; break; fi
+          done
+          if [ -z "$THEME" ]; then
+            echo "ERROR: 找不到 luci-theme-vantage 包目录"
+            ls -d feeds/*/ package/feeds/*/ 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "主题包目录: $THEME"
+
+          mkdir -p "$THEME/htdocs/luci-static/vantage"
+          cp $GITHUB_WORKSPACE/files/theme/fb-logo.png \
+             "$THEME/htdocs/luci-static/vantage/fb-logo.png"
+
+          # header.ut 里的两处内联品牌 SVG -> <img src="{{ media }}/fb-logo.png">
+          # 若上游模板结构变化导致替换未命中，直接报错中止，避免静默出一个没 logo 的固件
+          mkdir -p "$THEME/ucode/template/themes/vantage"
+          cp $GITHUB_WORKSPACE/files/theme/header.ut \
+             "$THEME/ucode/template/themes/vantage/header.ut"
+          if ! grep -q 'fb-logo.png' "$THEME/ucode/template/themes/vantage/header.ut"; then
+            echo "ERROR: header.ut 未包含 fb-logo.png 引用"
+            exit 1
+          fi
+          if grep -q 'vt-brand-tile' "$THEME/ucode/template/themes/vantage/header.ut"; then
+            echo "ERROR: header.ut 仍含旧的内联 SVG (vt-brand-tile)，替换失败"
+            exit 1
+          fi
+
           echo "=== 已注入 ==="
           ls package/luci-app-multi-wifi
           ls -la package/base-files/files/etc/uci-defaults/
+          ls -l "$THEME/htdocs/luci-static/vantage/fb-logo.png"
+          grep -c 'fb-logo.png' "$THEME/ucode/template/themes/vantage/header.ut"
 
       - name: 组装配置并校验
         run: |

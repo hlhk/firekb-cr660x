@@ -1,0 +1,55 @@
+#!/bin/sh
+# Firekb: 修补 luci-app-package-manager 的 rpcd ACL
+#
+# 背景（OpenWrt 25.12 apk 迁移后的上游疏漏）：
+#   LuCI 的 downloadLists() 会在只读上下文里调用 `apk update` 刷新索引，
+#   但 ACL 里 `package-manager-call update` 只写在 write 段，
+#   于是点「更新列表…」必然报：
+#     PermissionError: Exec permission denied
+#
+# 这里在 read 段补上 update / upgrade。幂等，重复执行不会重复插入。
+# 注意：不要把备份放在 /usr/share/rpcd/acl.d/ 目录里，
+#       rpcd 不认扩展名之外的 json，但为避免歧义统一放 /etc/firekb/。
+
+ACL=/usr/share/rpcd/acl.d/luci-app-package-manager.json
+
+[ -f "$ACL" ] || exit 0
+
+# read 段里已经授权过就直接退出
+awk '/"read"[ ]*:/ { inread = 1 }
+     /"write"[ ]*:/ { inread = 0 }
+     inread && /package-manager-call update/ { found = 1 }
+     END { exit !found }' "$ACL" && exit 0
+
+mkdir -p /etc/firekb
+[ -f /etc/firekb/luci-app-package-manager.json.orig ] || \
+	cp "$ACL" /etc/firekb/luci-app-package-manager.json.orig
+
+TMP=/tmp/acl-patched.json
+awk '
+/"read"[ ]*:/  { inread = 1 }
+/"write"[ ]*:/ { inread = 0 }
+{
+	if (inread && !done && /package-manager-call list-available/) {
+		print
+		match($0, /^[ \t]*/)
+		ind = substr($0, 1, RLENGTH)
+		print ind "\"/usr/libexec/package-manager-call update\": [ \"exec\" ],"
+		print ind "\"/usr/libexec/package-manager-call upgrade\": [ \"exec\" ],"
+		done = 1
+		next
+	}
+	print
+}
+END { if (!done) exit 3 }
+' "$ACL" > "$TMP" || { rm -f "$TMP"; exit 0; }
+
+# 落盘前校验 JSON，避免写坏 ACL 让 rpcd 起不来
+if jsonfilter -i "$TMP" -e '@' >/dev/null 2>&1; then
+	mv "$TMP" "$ACL"
+	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
+else
+	rm -f "$TMP"
+fi
+
+exit 0

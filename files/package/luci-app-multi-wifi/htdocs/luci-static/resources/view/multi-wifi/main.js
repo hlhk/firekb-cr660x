@@ -9,17 +9,17 @@
 /*
  * Multi WiFi - 批量创建多个 WiFi SSID (VAP)
  *
- * 硬件实测上限 (MT7981 / mt798x-wmac):
- *   2.4G (phy0): 主 SSID + 最多 14 个额外 SSID = 15 总数
- *   5G   (phy1): 主 SSID + 最多 15 个额外 SSID = 16 总数
+ * 硬件实测上限 (MT7915 / mt7915e):
+ *   每个 phy 最多 16 个 BSS（fw 限制），留 1 个给主 SSID。
+ *   CR660X 上 2.4G 与 5G 是同一张 MT7915 的两个 phy（phy4 / phy5）。
  * 超过会导致整个频段的 hostapd 崩溃，主 SSID 也会掉。
  * 因此 UI 上给出硬性限制与风险提示。
  */
 
-/* ---------- 硬件能力表（与实测结果一致） ---------- */
+/* ---------- 硬件能力表 ---------- */
 var HW_LIMITS = {
-	'2g': { max_total: 15, max_extra: 14, phy: 'phy0', label: '2.4G' },
-	'5g': { max_total: 16, max_extra: 15, phy: 'phy1', label: '5G'   }
+	'2g': { max_total: 15, max_extra: 14, label: '2.4G' },
+	'5g': { max_total: 16, max_extra: 15, label: '5G'   }
 };
 
 /* 建议安全值（留 2 个余量） */
@@ -197,7 +197,7 @@ return view.extend({
 			E('div', { 'class': 'alert-message warning' }, [
 				E('strong', {}, _('⚠ 重要提醒：')),
 				E('br'),
-				_('本机 MT7981 无线驱动对每个频段的 AP 数量有硬限制。'),
+				_('本机 MT7915 无线驱动对每张卡可创建的 BSS 数量有硬限制。'),
 				E('br'),
 				E('strong', {}, _('2.4G 超过 15 个、5G 超过 16 个，会导致整个频段崩溃 —— ')),
 				_('不只是多出来的那个失败，连主 SSID 也会一起掉线，必须重启 WiFi 才能恢复。'),
