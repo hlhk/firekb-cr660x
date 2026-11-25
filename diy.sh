@@ -8,6 +8,10 @@
 # full:    完整版，加 PassWall / OpenClash / Xray / Sing-Box 等
 set -e
 
+# 出错时打印准确位置，否则 set -e 会让脚本静默退出，
+# CI 日志里只剩 "Process completed with exit code 1"。
+trap 'rc=$?; echo ""; echo "!!! diy.sh 在第 $LINENO 行附近异常退出（rc=$rc）"; echo "!!! 最后执行的命令: $BASH_COMMAND"' ERR
+
 WS="$GITHUB_WORKSPACE"
 FLAVOR="${1:-minimal}"
 
@@ -109,8 +113,10 @@ grep -E '^CONFIG_TARGET_OPTIMIZATION=' .config || echo "  (未设置，使用默
 echo "--- 启用包总数 ---"
 grep -c '=y$' .config || echo "0"
 
+echo "STEP-1 启用包总数完成"
 # ---------- 硬校验 ----------
 fail=0
+echo "STEP-2 fail=0 完成"
 
 if ! grep -q '^CONFIG_TARGET_BOARD="ramips"' .config; then
   echo "ERROR: target 不是 ramips"
@@ -122,14 +128,19 @@ if ! grep -q '^CONFIG_TARGET_SUBTARGET="mt7621"' .config; then
   fail=1
 fi
 
-n=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6606=y' .config)
+# 注意 set -e：$(grep -c ...) 在无匹配时退出码为 1，
+# 赋值语句会被判定失败并直接终止整个脚本（连 echo 都来不及打印）。
+# 这正是之前日志停在"启用包总数 1120"、看不到任何 ERROR 的原因。
+n=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6606=y' .config || true)
+echo "    n=$n"
 if [ "$n" != "1" ]; then
   echo "ERROR: cr6606 未选中（当前 $n）"
   fail=1
 fi
 
 # 只允许一个机型，避免多编出用不上的固件
-extra=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[89]=y' .config)
+extra=$(grep -cE '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[89]=y' .config || true)
+echo "    extra=$extra"
 if [ "$extra" != "0" ]; then
   echo "ERROR: 存在多余机型（cr6608/cr6609 共 $extra 个），应只编 cr6606"
   fail=1
@@ -159,3 +170,4 @@ fi
 
 echo ""
 echo "配置校验通过 [flavor=$FLAVOR]"
+echo "STEP-END"
