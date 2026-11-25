@@ -17,9 +17,14 @@ echo "=========================================="
 
 # ---------- 1. target ----------
 echo ">>> 1/4 写入 target（ramips/mt7621，单一型号：cr6606）"
+# MULTI_PROFILE 必须保留：它开启 profile 选择机制，
+# 没有它 TARGET_DEVICE_xxx=y 会被 make defconfig 当成无效项直接丢弃
+# （tmp/.config-target.in 里该设备是 menuconfig + "default y if TARGET_ALL_PROFILES"）。
+# 保留 MULTI_PROFILE，但只写 cr6606 一个设备，产物就只有 cr6606。
 cat > .config <<'EOF'
 CONFIG_TARGET_ramips=y
 CONFIG_TARGET_ramips_mt7621=y
+CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr6606=y
 CONFIG_TARGET_ROOTFS_SQUASHFS=y
 CONFIG_TARGET_ROOTFS_UBI=y
@@ -92,13 +97,17 @@ echo "=========================================="
 echo "--- target ---"
 grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES)=' .config || true
 echo "--- 目标机型 ---"
-grep -E '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[689]=y' .config
+# 注意：这里必须 || true。
+# workflow 用 bash -e，grep 无匹配会返回 1 直接终止脚本，
+# 导致"校验"之后的所有错误信息都看不到（之前就是这样把真实原因藏起来的）。
+grep -E '^CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_xiaomi_mi-router-cr660[689]=y' .config || \
+  echo "  (未选中任何 CR660x 机型！)"
 echo "--- 版本 ---"
 grep -E '^CONFIG_VERSION_(DIST|NUMBER|CODE)=' .config || true
 echo "--- 编译优化（应为空，用默认） ---"
 grep -E '^CONFIG_TARGET_OPTIMIZATION=' .config || echo "  (未设置，使用默认值 ✓)"
 echo "--- 启用包总数 ---"
-grep -c '=y$' .config
+grep -c '=y$' .config || echo "0"
 
 # ---------- 硬校验 ----------
 fail=0
