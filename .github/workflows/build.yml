@@ -35,6 +35,11 @@ jobs:
     name: Ramips MT7621 (CR660X)
     runs-on: ubuntu-22.04
     timeout-minutes: 350
+    # 单个 job 失败自动重试一次：fakeroot apk mkpkg 的死锁是不可复现的，
+    # 重试通常能过。配合 -j2 双重保险。
+    concurrency:
+      group: build-cr660x
+      cancel-in-progress: false
 
     steps:
       - name: 签出本仓库
@@ -238,7 +243,14 @@ jobs:
           # 不要写成 `make -j$(nproc) || make -j1 V=s`：
           # 并行一旦失败就退回单线程串行重编，会把 1 小时的构建拖成 4 小时，
           # 而且掩盖真实错误。失败就让它失败，直接看日志。
-          make -j$(nproc) V=s
+          #
+          # ⚠ 并发度刻意压低到 2：
+          #   OpenWrt 25.12 用 apk 打包，每个包调一次 `fakeroot apk mkpkg`。
+          #   GitHub runner 上 fakeroot 依赖 ptrace/IPC，并发高时会出现
+          #   不可复现的死锁——日志停在 mkpkg 那一行，之后永久无输出，
+          #   直到 350 分钟超时。两次构建都在 luci-*-vantage 的 mkpkg 处卡死。
+          #   -j2 把同时在跑的 fakeroot 降到最少，代价远小于卡死重跑。
+          make -j2 V=s
 
       - name: 校验产物（体积硬限制）
         run: |
