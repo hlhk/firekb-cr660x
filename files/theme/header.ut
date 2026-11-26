@@ -95,7 +95,7 @@
 </script>
 <link rel="stylesheet" href="{{ media }}/vantage.css?v=1.0.21">
 <link rel="stylesheet" href="{{ media }}/icons.css?v=1.0.21">
-<link rel="icon" href="{{ media }}/logo.svg" type="image/svg+xml">
+<link rel="icon" href="{{ media }}/fb-logo.png" type="image/png">
 <script src="{{ entityencode(dispatcher.build_url('admin/translations', dispatcher.lang), true) }}"></script>
 <script src="{{ resource }}/cbi.js?v=1.0.21"></script>
 </head>

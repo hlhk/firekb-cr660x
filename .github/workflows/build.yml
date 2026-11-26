@@ -151,8 +151,10 @@ jobs:
           file package/base-files/files/etc/uci-defaults/*
 
           # ---------- 主题 logo 覆盖 ----------
-          # Vantage 的页面品牌图标是 header.ut 里的内联 SVG，不是 logo.svg
-          # （logo.svg 只做浏览器 favicon）。两者都要替换。
+          # Vantage 的品牌图标是模板里的内联 SVG，不是 logo.svg：
+          #   header.ut  —— 后台顶栏 + 侧栏（登录后）
+          #   sysauth.ut —— 登录页中央图标
+          # 浏览器 favicon 也统一指向 fb-logo.png，不再用 logo.svg。
           THEME=""
           for cand in \
             package/feeds/theme_vantage/luci-theme-vantage \
@@ -185,11 +187,30 @@ jobs:
             exit 1
           fi
 
+          # 登录页 sysauth.ut：中央品牌图标 + favicon
+          cp $GITHUB_WORKSPACE/files/theme/sysauth.ut \
+             "$THEME/ucode/template/themes/vantage/sysauth.ut"
+          if ! grep -q 'fb-logo.png' "$THEME/ucode/template/themes/vantage/sysauth.ut"; then
+            echo "ERROR: sysauth.ut 未包含 fb-logo.png 引用"
+            exit 1
+          fi
+          if grep -q 'vt-brand-tile' "$THEME/ucode/template/themes/vantage/sysauth.ut"; then
+            echo "ERROR: sysauth.ut 仍含旧的内联 SVG (vt-brand-tile)，替换失败"
+            exit 1
+          fi
+          # 两个模板都不该再引用旧的 logo.svg
+          if grep -q 'logo\.svg' "$THEME/ucode/template/themes/vantage/header.ut" \
+             "$THEME/ucode/template/themes/vantage/sysauth.ut"; then
+            echo "ERROR: 模板仍引用旧 favicon logo.svg"
+            exit 1
+          fi
+
           echo "=== 已注入 ==="
           ls package/luci-app-multi-wifi
           ls -la package/base-files/files/etc/uci-defaults/
           ls -l "$THEME/htdocs/luci-static/vantage/fb-logo.png"
-          grep -c 'fb-logo.png' "$THEME/ucode/template/themes/vantage/header.ut"
+          echo "header.ut  fb-logo 命中: $(grep -c 'fb-logo.png' "$THEME/ucode/template/themes/vantage/header.ut")"
+          echo "sysauth.ut fb-logo 命中: $(grep -c 'fb-logo.png' "$THEME/ucode/template/themes/vantage/sysauth.ut")"
 
       - name: 组装配置并校验
         run: |
